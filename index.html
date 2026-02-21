@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>パズドラ アシスト検討応援ツール</title>
+  <meta name="description" content="パズドラの最適なアシストモンスターの組み合わせを提案するツール。覚醒スキル条件やスキブ数を指定して、最適なアシストを自動計算。">
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">データを読み込み中...</div>
+  </div>
+
+  <!-- Header -->
+  <header class="app-header">
+    <h1 class="app-title">🐲 アシスト検討応援ツール</h1>
+    <p class="app-subtitle">パーティに最適なアシストの組み合わせを見つけよう</p>
+  </header>
+
+  <!-- Step Indicator -->
+  <nav class="step-indicator" id="step-indicator">
+    <div class="step-dot active" data-step="0">0</div>
+    <div class="step-line" data-line="0"></div>
+    <div class="step-dot" data-step="1">1</div>
+    <div class="step-line" data-line="1"></div>
+    <div class="step-dot" data-step="2">2</div>
+    <div class="step-line" data-line="2"></div>
+    <div class="step-dot" data-step="3">3</div>
+    <div class="step-line" data-line="3"></div>
+    <div class="step-dot" data-step="4">R</div>
+  </nav>
+
+  <main class="app-container">
+
+    <!-- ===== STEP 0: ベースモンスター指定 ===== -->
+    <div class="step-panel active" id="step-0">
+      <div class="section-card">
+        <div class="section-title"><span class="emoji">👤</span> STEP 0: ベースモンスターの指定</div>
+        <p class="section-desc">パーティの6体のベースモンスターを指定してください。番号または名前で検索できます。（任意：指定しなくても次のステップに進めます）</p>
+        <div class="slot-tabs" id="base-slot-tabs">
+          <div class="slot-tab active" data-slot="0">スロット1</div>
+          <div class="slot-tab" data-slot="1">スロット2</div>
+          <div class="slot-tab" data-slot="2">スロット3</div>
+          <div class="slot-tab" data-slot="3">スロット4</div>
+          <div class="slot-tab" data-slot="4">スロット5</div>
+          <div class="slot-tab" data-slot="5">スロット6</div>
+        </div>
+        <div id="base-slot-contents"></div>
+      </div>
+      <div class="step-nav">
+        <div></div>
+        <button class="btn btn-primary" onclick="goToStep(1)">次へ ▶</button>
+      </div>
+    </div>
+
+    <!-- ===== STEP 1: 個別条件指定 ===== -->
+    <div class="step-panel" id="step-1">
+      <!-- ベースモンスター情報表示エリア -->
+      <div id="step1-base-summary"></div>
+
+      <div class="section-card">
+        <div class="section-title"><span class="emoji">⚙️</span> STEP 1: スロット別アシスト条件</div>
+        <p class="section-desc">各スロットのアシストに対する条件を設定します。必須覚醒、属性/タイプ条件、スキル使用可否を指定してください。</p>
+        <div class="slot-tabs" id="cond-slot-tabs">
+          <div class="slot-tab active" data-slot="0">スロット1</div>
+          <div class="slot-tab" data-slot="1">スロット2</div>
+          <div class="slot-tab" data-slot="2">スロット3</div>
+          <div class="slot-tab" data-slot="3">スロット4</div>
+          <div class="slot-tab" data-slot="4">スロット5</div>
+          <div class="slot-tab" data-slot="5">スロット6</div>
+        </div>
+        <div id="cond-slot-contents"></div>
+      </div>
+      <div class="step-nav">
+        <button class="btn btn-outline" onclick="goToStep(0)">◀ 戻る</button>
+        <button class="btn btn-primary" onclick="goToStep(2)">次へ ▶</button>
+      </div>
+    </div>
+
+    <!-- ===== STEP 2: 火力覚醒の選択 ===== -->
+    <div class="step-panel" id="step-2">
+      <!-- 前ステップの条件表示エリア -->
+      <div id="step2-prev-summary"></div>
+
+      <div class="section-card">
+        <div class="section-title"><span class="emoji">🔥</span> STEP 2: 有効な火力覚醒の選択</div>
+        <p class="section-desc">このパーティで有効活用できる火力覚醒を選択してください。＋付き覚醒は元覚醒の選択で自動的に含まれます。</p>
+        <div class="field-label">火力覚醒一覧（タップで選択/解除）</div>
+        <div class="icon-grid" id="dps-awakens-grid"></div>
+        <div class="field-label" style="margin-top:12px">選択中の火力覚醒：</div>
+        <div class="selected-conditions" id="selected-dps-awakens">
+          <span style="color:var(--text-muted);font-size:0.8rem">まだ選択されていません</span>
+        </div>
+      </div>
+      <div class="step-nav">
+        <button class="btn btn-outline" onclick="goToStep(1)">◀ 戻る</button>
+        <button class="btn btn-primary" onclick="goToStep(3)">次へ ▶</button>
+      </div>
+    </div>
+
+    <!-- ===== STEP 3: パーティ全体条件 ===== -->
+    <div class="step-panel" id="step-3">
+      <div class="section-card">
+        <div class="section-title"><span class="emoji">🎯</span> STEP 3: パーティ全体で必要な覚醒</div>
+        <p class="section-desc">アシスト6体合計で欲しい覚醒の種類と個数を指定してください。アイコンをタップするたび数量が増加します。右クリックまたは長押しで減少します。</p>
+        <div class="field-label">覚醒スキル（タップで追加）</div>
+        <div class="icon-grid" id="party-awakens-grid"></div>
+        <div class="field-label" style="margin-top:12px">指定中の必要覚醒：</div>
+        <div class="selected-conditions" id="party-required-display">
+          <span style="color:var(--text-muted);font-size:0.8rem">まだ指定されていません</span>
+        </div>
+      </div>
+      <div class="section-card">
+        <div class="section-title"><span class="emoji">⚡</span> スキルブースト設定</div>
+        <div class="num-input-group">
+          <label>必要スキブ合計：</label>
+          <input type="number" class="num-input" id="required-sb" min="0" value="0">
+          <span style="font-size:0.82rem;color:var(--text-muted)">ターン</span>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label">遅延をスキブに加算する</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="delay-as-sb">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="step-nav">
+        <button class="btn btn-outline" onclick="goToStep(2)">◀ 戻る</button>
+        <button class="btn btn-gold btn-lg" id="btn-optimize" onclick="runOptimization()">🔍 最適アシストを検索</button>
+      </div>
+    </div>
+
+    <!-- ===== STEP 4: 結果表示 ===== -->
+    <div class="step-panel" id="step-4">
+      <div id="search-status-warning"></div>
+
+      <!-- 計算進捗セクション -->
+      <div id="calc-progress-section" style="display:none">
+        <div class="progress-card">
+          <div class="progress-status" id="progress-status">計算中...</div>
+          <div class="progress-bar-wrap">
+            <div class="progress-bar-inner" id="progress-bar-inner"></div>
+          </div>
+          <button class="btn btn-danger" onclick="stopOptimization()">⏹ 計算を止める</button>
+        </div>
+      </div>
+
+      <!-- 固定モンスター管理セクション -->
+      <div id="pinned-section" style="display:none">
+        <div class="section-card" style="border:2px solid var(--accent-gold)">
+          <div class="section-title"><span class="emoji">📌</span> 固定済みアシスト</div>
+          <div id="pinned-list"></div>
+          <div style="margin-top:10px;text-align:right">
+            <button class="btn btn-outline btn-sm" onclick="clearAllPins()">全固定を解除して再計算</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title"><span class="emoji">🏆</span> 最適化結果</div>
+        <p class="section-desc" id="result-desc"></p>
+        <!-- ベースモンスター表示 -->
+        <div id="result-base-display"></div>
+        <!-- 結果パターン -->
+        <div id="result-container"></div>
+      </div>
+
+      <!-- 除外リスト管理 -->
+      <div class="section-card" id="exclusion-manager-section" style="display:none">
+        <div class="section-title"><span class="emoji">🚫</span> 除外済みモンスターの管理</div>
+        <div class="exclusion-list" id="exclusion-list-container"></div>
+        <div style="margin-top:12px; text-align:right">
+          <button class="btn btn-outline btn-sm" onclick="clearAllExclusions()">全ての除外を解除</button>
+        </div>
+      </div>
+
+      <div class="step-nav">
+        <button class="btn btn-outline" onclick="goToStep(3)">◀ 条件を変更</button>
+        <button class="btn btn-primary" id="btn-recalc" onclick="runOptimization()" style="display:none">🔄
+          除外して再計算</button>
+      </div>
+    </div>
+
+  </main>
+
+  <footer style="text-align:right;padding:8px 16px;font-size:0.7rem;color:#666;opacity:0.6;">
+    v1.0.0 / 最終修正: 2026-02-20
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
