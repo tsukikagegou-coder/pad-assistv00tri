@@ -21,7 +21,8 @@ const slotConditions = Array.from({ length: 6 }, () => ({
   typeCondition: null,
   skillUsable: true,
   resonance: false,
-  dpsPriority: false, // 追加
+  dpsPriority: false,
+  skillKeyword: "", // 追加
 }));
 
 // STEP2: 有効な火力覚醒
@@ -447,6 +448,12 @@ function selectBaseMonster(slotIdx, monster) {
     <div class="mon-attrs">${attrs.map(a => `<img src="${attrIcon(a)}" title="${attrName(a)}">`).join('')}</div>
     <div class="mon-types">${types.map(t => `<img src="${typeIcon(t)}" title="${typeName(t)}">`).join('')}</div>
     <div class="mon-awakens">${awakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}</div>
+    <div class="mon-skill" style="font-size:0.8rem; margin-top:4px; color:var(--text-muted);">
+      ${(function () {
+      const s = getSkillInfo(monster);
+      return s ? `スキル：${s.name} (CT: ${s.baseTurn}→${s.minTurn})` : '';
+    })()}
+    </div>
   `;
   info.classList.add('show');
 
@@ -501,7 +508,11 @@ function initCondSlots() {
       <div class="selected-conditions" id="cond-selected-${i}">
         <span style="color:var(--text-muted);font-size:0.8rem">なし</span>
       </div>
-      <div class="toggle-row" style="margin-top:8px">
+      <div class="field-label" style="margin-top:12px">🔍 スキル名キーワード条件（任意・複数語句はスペース区切り）</div>
+      <input type="text" class="keyword-input" data-slot="${i}" placeholder="例：覚醒無効　ダメージ吸収" 
+             style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); font-size:0.85rem;">
+      <p style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">※ヘイスト、遅延必要数は後ほど入力するため、原則ここには記入不要です。</p>
+      <div class="toggle-row" style="margin-top:12px">
         <span class="toggle-label">⚡ アシストスキル使用可否（変身キャラ等はOFF推奨）</span>
         <label class="toggle-switch">
           <input type="checkbox" class="skill-usable-toggle" data-slot="${i}" checked>
@@ -604,6 +615,13 @@ function initCondSlots() {
     if (e.target.classList.contains('dps-priority-toggle'))
       slotConditions[parseInt(e.target.dataset.slot)].dpsPriority = e.target.checked;
   });
+
+  // キーワード入力
+  container.addEventListener('input', (e) => {
+    if (e.target.classList.contains('keyword-input')) {
+      slotConditions[parseInt(e.target.dataset.slot)].skillKeyword = e.target.value;
+    }
+  });
 }
 
 function updateCondSelectedDisplay(slot) {
@@ -647,6 +665,12 @@ function updateStep1BaseInfo() {
         <div class="base-summary-row">
           <span class="bs-label">No.${base.no}</span>
           <span class="bs-name">${base.name}</span>
+          <span style="font-size:0.75rem; color:var(--text-muted); margin-left:8px;">
+            ${(function () {
+          const s = getSkillInfo(base);
+          return s ? `(CT: ${s.baseTurn}→${s.minTurn})` : '';
+        })()}
+          </span>
           ${attrs.map(a => `<img src="${attrIcon(a)}" style="width:18px;height:18px" title="${attrName(a)}">`).join('')}
           ${types.map(t => `<img src="${typeIcon(t)}" style="width:18px;height:18px" title="${typeName(t)}">`).join('')}
         </div>
@@ -1413,6 +1437,20 @@ function filterCandidatesForSlot(slotIdx) {
       if (!active.some(a => selectedDpsAwakens.has(a))) return false;
     }
 
+    // スキルキーワード検索
+    if (cond.skillKeyword && cond.skillKeyword.trim() !== "") {
+      const keywords = cond.skillKeyword.trim().toLowerCase().split(/[\s　]+/).filter(k => k !== "");
+      if (keywords.length > 0) {
+        const skill = getSkillInfo(m);
+        if (!skill) return false;
+        const skillName = (skill.name || "").toLowerCase();
+        const skillDesc = (skill.description || "").toLowerCase();
+        const fullText = skillName + " " + skillDesc;
+        const isMatch = keywords.every(k => fullText.includes(k));
+        if (!isMatch) return false;
+      }
+    }
+
     return true;
   });
 }
@@ -1549,7 +1587,7 @@ function buildResultCard(result, idx, isRealtime) {
           ${allAw.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
         </div>
         <div class="assist-skill">
-          <div class="skill-name-line">${skill ? skill.name : '不明'}<span class="skill-turn">${skill ? ` (CT: ${skill.minTurn})` : ''}</span></div>
+          <div class="skill-name-line">${skill ? skill.name : '不明'}<span class="skill-turn">${skill ? ` (CT: ${skill.baseTurn}→${skill.minTurn})` : ''}</span></div>
           <div class="skill-desc">${skill ? skill.description : ''}</div>
         </div>
       </div>
