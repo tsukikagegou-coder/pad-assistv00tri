@@ -11,8 +11,51 @@
 
 <body>
 
-  <!-- Loading Overlay -->
-  <div id="loading-overlay">
+  <!-- Opening Animation overlay -->
+  <div id="opening-animation">
+    <div class="animation-container">
+      <svg viewBox="0 0 400 300" class="opening-svg">
+        <defs>
+          <linearGradient id="rainbow-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#ff5f5f" />
+            <stop offset="20%" style="stop-color:#ffbd5f" />
+            <stop offset="40%" style="stop-color:#fff15f" />
+            <stop offset="60%" style="stop-color:#5fff7d" />
+            <stop offset="80%" style="stop-color:#5fb8ff" />
+            <stop offset="100%" style="stop-color:#b85fff" />
+          </linearGradient>
+        </defs>
+        <!-- 6つの四角い枠 (①) -->
+        <g class="slots-group">
+          <rect x="50" y="100" width="40" height="40" rx="4" class="slot-rect" />
+          <rect x="105" y="100" width="40" height="40" rx="4" class="slot-rect" />
+          <rect x="160" y="100" width="40" height="40" rx="4" class="slot-rect" />
+          <rect x="215" y="100" width="40" height="40" rx="4" class="slot-rect" />
+          <rect x="270" y="100" width="40" height="40" rx="4" class="slot-rect" />
+          <rect x="325" y="100" width="40" height="40" rx="4" class="slot-rect" />
+        </g>
+
+        <!-- 6つの虹色四角 (②) -->
+        <g class="rainbow-group">
+          <rect x="50" y="400" width="40" height="40" rx="4" class="rainbow-rect r1" />
+          <rect x="105" y="400" width="40" height="40" rx="4" class="rainbow-rect r2" />
+          <rect x="160" y="400" width="40" height="40" rx="4" class="rainbow-rect r3" />
+          <rect x="215" y="400" width="40" height="40" rx="4" class="rainbow-rect r4" />
+          <rect x="270" y="400" width="40" height="40" rx="4" class="rainbow-rect r5" />
+          <rect x="325" y="400" width="40" height="40" rx="4" class="rainbow-rect r6" />
+        </g>
+
+        <!-- 弾けるエフェクト用のパーティクル (③) -->
+        <g class="burst-group" id="burst-particles"></g>
+
+        <!-- タイトル表示 (③) -->
+        <text x="200" y="200" text-anchor="middle" class="opening-title">アシスト検討応援ツール</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Loading Overlay (Initial hidden, will be managed by app.js) -->
+  <div id="loading-overlay" style="display: none;">
     <div class="loading-spinner"></div>
     <div class="loading-text">データを読み込み中...</div>
   </div>
@@ -93,7 +136,7 @@
         <p class="section-desc">このパーティで有効活用できる火力覚醒を選択してください。＋付き覚醒は元覚醒の選択で自動的に含まれます。</p>
         <div class="field-label">火力覚醒一覧（タップで選択/解除）</div>
         <div class="icon-grid" id="dps-awakens-grid"></div>
-        <div class="field-label" style="margin-top:12px">選択中の火力覚醒：</div>
+        <div class="field-label" style="margin-top:12px">選択中の火力覚醒（タップで解除）：</div>
         <div class="selected-conditions" id="selected-dps-awakens">
           <span style="color:var(--text-muted);font-size:0.8rem">まだ選択されていません</span>
         </div>
@@ -111,13 +154,14 @@
         <p class="section-desc">アシスト6体合計で欲しい覚醒の種類と個数を指定してください。アイコンをタップするたび数量が増加します。右クリックまたは長押しで減少します。</p>
         <div class="field-label">覚醒スキル（タップで追加）</div>
         <div class="icon-grid" id="party-awakens-grid"></div>
-        <div class="field-label" style="margin-top:12px">指定中の必要覚醒：</div>
+        <div class="field-label" style="margin-top:12px">指定中の必要覚醒（タップで1つ減らす）：</div>
         <div class="selected-conditions" id="party-required-display">
           <span style="color:var(--text-muted);font-size:0.8rem">まだ指定されていません</span>
         </div>
       </div>
       <div class="section-card">
         <div class="section-title"><span class="emoji">⚡</span> スキルブースト設定</div>
+        <p class="section-desc">※アシストモンスターのみで補う必要があるスキルブースト合計数を入力してください</p>
         <div class="num-input-group">
           <label>必要スキブ合計：</label>
           <input type="number" class="num-input" id="required-sb" min="0" value="0">
@@ -133,7 +177,7 @@
       </div>
       <div class="step-nav">
         <button class="btn btn-outline" onclick="goToStep(2)">◀ 戻る</button>
-        <button class="btn btn-gold btn-lg" id="btn-optimize" onclick="runOptimization()">🔍 最適アシストを検索</button>
+        <button class="btn btn-gold btn-lg" id="btn-optimize" onclick="runOptimization()">🔍 この条件で検索</button>
       </div>
     </div>
 
@@ -183,8 +227,12 @@
 
       <div class="step-nav">
         <button class="btn btn-outline" onclick="goToStep(3)">◀ 条件を変更</button>
-        <button class="btn btn-primary" id="btn-recalc" onclick="runOptimization()" style="display:none">🔄
-          除外して再計算</button>
+        <div style="display: flex; flex-direction: column; align-items: flex-end; max-width: 60%; text-align: right;">
+          <span
+            style="font-size:0.75rem; color:var(--text-muted); margin-bottom:8px;">※3体程度固定化した上で再計算するとより精度が上がりますが、時間がかかります（4体固定推奨）</span>
+          <button class="btn btn-primary" id="btn-recalc" onclick="runOptimization()" style="display:none">🔄
+            除外して再計算</button>
+        </div>
       </div>
     </div>
 

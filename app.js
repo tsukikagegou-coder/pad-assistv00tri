@@ -105,8 +105,8 @@ const PARTY_HIDDEN_AWAKEN_IDS = new Set([21, 56, 105]);
 async function loadAllData() {
   try {
     const [monsterRes, skillRes] = await Promise.all([
-      fetch('monster_data.json'),
-      fetch('skill_list.json'),
+      fetch('https://padmdb.rainbowsite.net/listJson/monster_data.json'),
+      fetch('https://padmdb.rainbowsite.net/listJson/skill_list.json'),
     ]);
     if (!monsterRes.ok || !skillRes.ok) throw new Error('API fetch failed');
 
@@ -135,9 +135,76 @@ async function loadAllData() {
     return true;
   } catch (err) {
     console.error('Data load error:', err);
-    document.querySelector('.loading-text').textContent = 'データの読み込みに失敗しました。ページを再読み込みしてください。';
+    const loadingText = document.querySelector('.loading-text');
+    if (loadingText) loadingText.textContent = 'データの読み込みに失敗しました。ページを再読み込みしてください。';
     return false;
   }
+}
+
+// ==================== オープニングアニメーション ====================
+
+function playOpeningAnimation() {
+  return new Promise(resolve => {
+    const rainbowRects = document.querySelectorAll('.rainbow-rect');
+    const burstGroup = document.getElementById('burst-particles');
+    const title = document.querySelector('.opening-title');
+
+    // ① 四角いマークが6つ並んでいる (HTML/CSSで初期表示)
+
+    // ② 虹色の四角が6つ下からやってきて、①にくっつく
+    setTimeout(() => {
+      rainbowRects.forEach((rect, i) => {
+        setTimeout(() => {
+          rect.classList.add('rainbow-move');
+        }, i * 100);
+      });
+    }, 500);
+
+    // ③ ポップな虹色に弾けて、タイトル表示
+    // floatUpGummy は 1.2s (1200ms)
+    // 最後の四角の開始が 500 + 500 = 1000ms
+    // よって 1000ms + 1200ms = 2200ms 付近ですべてのアニメーションが完了
+    setTimeout(() => {
+      // 爆発エフェクトの生成
+      createBurstEffect(burstGroup);
+
+      // 虹色四角を消してタイトルを表示
+      rainbowRects.forEach(rect => rect.style.display = 'none');
+      document.querySelector('.slots-group').style.display = 'none';
+
+      title.classList.add('pop-in');
+
+      // アニメーション完了 (少し余韻を残す)
+      setTimeout(resolve, 2000);
+    }, 2200);
+  });
+}
+
+function createBurstEffect(parent) {
+  const colors = ['#ff5f5f', '#ffbd5f', '#fff15f', '#5fff7d', '#5fb8ff', '#b85fff'];
+  const centerX = [70, 125, 180, 235, 290, 345];
+  const centerY = 120;
+
+  centerX.forEach((cx, i) => {
+    const color = colors[i];
+    for (let j = 0; j < 12; j++) {
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      const angle = (Math.PI * 2 * j) / 12;
+      const dist = 30 + Math.random() * 40;
+      const tx = Math.cos(angle) * dist;
+      const ty = Math.sin(angle) * dist;
+
+      circle.setAttribute('cx', cx);
+      circle.setAttribute('cy', centerY);
+      circle.setAttribute('r', 2 + Math.random() * 4);
+      circle.style.fill = color;
+      circle.style.setProperty('--tx', `${tx}px`);
+      circle.style.setProperty('--ty', `${ty}px`);
+      circle.classList.add('particle');
+
+      parent.appendChild(circle);
+    }
+  });
 }
 
 async function loadCSVMappings() {
@@ -420,18 +487,22 @@ function initCondSlots() {
 
     div.innerHTML = `
       <div class="base-summary-panel" id="cond-base-info-${i}" style="display:none"></div>
-      <div class="field-label">🎨 属性条件（1つ選択、再クリックで解除）</div>
-      <div class="icon-grid cond-attr-grid" data-slot="${i}">${attrIcons}</div>
-      <div class="field-label">🏷️ タイプ条件（1つ選択、再クリックで解除）</div>
-      <div class="icon-grid cond-type-grid" data-slot="${i}">${typeIcons}</div>
-      <div class="field-label">✨ 必須覚醒（タップで追加、右クリックで減少）</div>
+      <details>
+        <summary class="field-label" style="cursor:pointer; outline:none;">🎨 属性条件（1つ選択、再クリックで解除）</summary>
+        <div class="icon-grid cond-attr-grid" data-slot="${i}">${attrIcons}</div>
+      </details>
+      <details style="margin-top:8px">
+        <summary class="field-label" style="cursor:pointer; outline:none;">🏷️ タイプ条件（1つ選択、再クリックで解除）</summary>
+        <div class="icon-grid cond-type-grid" data-slot="${i}">${typeIcons}</div>
+      </details>
+      <div class="field-label" style="margin-top:8px">✨ 必須覚醒（タップで追加、右クリックで減少）</div>
       <div class="icon-grid cond-awaken-grid" data-slot="${i}">${awakenIcons}</div>
       <div class="field-label" style="margin-top:8px">選択中の必須覚醒：</div>
       <div class="selected-conditions" id="cond-selected-${i}">
         <span style="color:var(--text-muted);font-size:0.8rem">なし</span>
       </div>
       <div class="toggle-row" style="margin-top:8px">
-        <span class="toggle-label">⚡ スキル使用可能</span>
+        <span class="toggle-label">⚡ アシストスキル使用可否（変身キャラ等はOFF推奨）</span>
         <label class="toggle-switch">
           <input type="checkbox" class="skill-usable-toggle" data-slot="${i}" checked>
           <span class="toggle-slider"></span>
@@ -646,13 +717,29 @@ function updateDpsSelectedDisplay() {
     const plusId = DPS_AWAKEN_PAIRS[id];
     if (plusId && selectedDpsAwakens.has(plusId)) {
       // ベース版の場合のみ表示
-      items.push(`<div class="condition-tag"><img src="${awakenIcon(id)}">${awakenName(id)} <span style="color:var(--text-muted)">(+含む)</span></div>`);
+      items.push(`<div class="condition-tag clickable-tag" data-id="${id}" style="cursor:pointer" title="クリックで解除"><img src="${awakenIcon(id)}">${awakenName(id)} <span style="color:var(--text-muted)">(+含む)</span></div>`);
     } else if (!Object.values(DPS_AWAKEN_PAIRS).includes(id)) {
       // ＋版でないもの（ペアを持たないもの）のみ表示
-      items.push(`<div class="condition-tag"><img src="${awakenIcon(id)}">${awakenName(id)}</div>`);
+      items.push(`<div class="condition-tag clickable-tag" data-id="${id}" style="cursor:pointer" title="クリックで解除"><img src="${awakenIcon(id)}">${awakenName(id)}</div>`);
     }
   }
   display.innerHTML = items.join('');
+
+  // 選択解除のクリックイベント追加
+  display.querySelectorAll('.clickable-tag').forEach(tag => {
+    tag.addEventListener('click', () => {
+      const id = parseInt(tag.dataset.id);
+      const plusId = DPS_AWAKEN_PAIRS[id];
+      selectedDpsAwakens.delete(id);
+      if (plusId) selectedDpsAwakens.delete(plusId);
+
+      // グリッドの選択状態も更新
+      const gridBtn = document.querySelector(`#dps-awakens-grid .icon-btn[data-dps-id="${id}"]`);
+      if (gridBtn) gridBtn.classList.remove('selected');
+
+      updateDpsSelectedDisplay();
+    });
+  });
 }
 
 // --- STEP2: 前ステップの条件サマリー表示 ---
@@ -745,8 +832,25 @@ function updatePartyRequiredDisplay() {
     return;
   }
   display.innerHTML = entries.map(([id, cnt]) =>
-    `<div class="condition-tag"><img src="${awakenIcon(id)}" title="${awakenName(id)}">${awakenName(id)} ×${cnt}</div>`
+    `<div class="condition-tag clickable-tag" data-id="${id}" style="cursor:pointer" title="クリックで1つ減らす"><img src="${awakenIcon(id)}" title="${awakenName(id)}">${awakenName(id)} ×${cnt}</div>`
   ).join('');
+
+  // 選択解除のクリックイベント追加
+  display.querySelectorAll('.clickable-tag').forEach(tag => {
+    tag.addEventListener('click', () => {
+      const id = parseInt(tag.dataset.id);
+      if (partyRequiredAwakens[id] > 0) {
+        partyRequiredAwakens[id]--;
+        if (partyRequiredAwakens[id] === 0) delete partyRequiredAwakens[id];
+
+        // グリッドのバッジ更新
+        const gridBtn = document.querySelector(`#party-awakens-grid .icon-btn[data-id="${id}"]`);
+        if (gridBtn) updatePartyBadge(gridBtn, id);
+
+        updatePartyRequiredDisplay();
+      }
+    });
+  });
 }
 
 // ==================== 最適化エンジン ====================
@@ -928,7 +1032,7 @@ async function optimize() {
   const results = await runDFS(slotCandidates, searchOrder, initialAwakens, initialSB, totalCombinations);
 
   if (results.length === 0)
-    throw new Error('条件を満たす組み合わせが見つかりませんでした。ベースモンスターの覚醒も考慮していますが、依然として条件が厳しいようです。');
+    throw new Error('条件を満たす組み合わせが見つかりませんでした。条件を緩和するか、必須とする覚醒を見直してください。');
 
   return results;
 }
@@ -1750,11 +1854,25 @@ function calcSBBreakdown(state) {
 
 document.addEventListener('DOMContentLoaded', async () => {
   const overlay = document.getElementById('loading-overlay');
-  const success = await loadAllData();
+  const opening = document.getElementById('opening-animation');
+
+  // データ読み込みとアニメーションを同時に開始
+  const [success] = await Promise.all([
+    loadAllData(),
+    playOpeningAnimation()
+  ]);
+
   if (success) {
     initUI();
-    overlay.classList.add('hidden');
-    setTimeout(() => overlay.style.display = 'none', 600);
+    // アニメーション終了後にフェードアウト
+    opening.classList.add('fade-out');
+    setTimeout(() => {
+      opening.style.display = 'none';
+    }, 600);
     console.log(`データ読込完了: 全${allMonsters.length}体, アシスト候補${assistMonsters.length}体, スキル${Object.keys(skillMap).length}件`);
+  } else {
+    // 失敗時は通常のローディング表示に切り替え
+    opening.style.display = 'none';
+    overlay.style.display = 'flex';
   }
 });
