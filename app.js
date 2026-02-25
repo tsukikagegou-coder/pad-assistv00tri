@@ -105,8 +105,8 @@ const PARTY_HIDDEN_AWAKEN_IDS = new Set([21, 56, 105]);
 async function loadAllData() {
   try {
     const [monsterRes, skillRes] = await Promise.all([
-      fetch('https://padmdb.rainbowsite.net/listJson/monster_data.json'),
-      fetch('https://padmdb.rainbowsite.net/listJson/skill_list.json'),
+      fetch('./monster_data.json'),
+      fetch('./skill_list.json'),
     ]);
     if (!monsterRes.ok || !skillRes.ok) throw new Error('API fetch failed');
 
@@ -210,9 +210,9 @@ function createBurstEffect(parent) {
 async function loadCSVMappings() {
   try {
     const [awakRes, attrRes, typeRes] = await Promise.all([
-      fetch('awakens/awakens_name.csv'),
-      fetch('attributes/attributes_name.csv'),
-      fetch('type/type_name.csv'),
+      fetch('./awakens/awakens_name.csv'),
+      fetch('./attributes/attributes_name.csv'),
+      fetch('./type/type_name.csv'),
     ]);
     const awakText = await awakRes.text();
     awakText.trim().split('\n').forEach(line => {
