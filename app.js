@@ -1856,6 +1856,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const overlay = document.getElementById('loading-overlay');
   const opening = document.getElementById('opening-animation');
 
+  initInfoModal();
+
   // データ読み込みとアニメーションを同時に開始
   const [success] = await Promise.all([
     loadAllData(),
@@ -1876,3 +1878,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     overlay.style.display = 'flex';
   }
 });
+
+// ==================== インフォメーションモーダル ====================
+function initInfoModal() {
+  const btnShow = document.getElementById('btn-show-info');
+  const btnClose = document.getElementById('btn-close-info');
+  const overlay = document.getElementById('info-modal-overlay');
+  const textContent = document.getElementById('info-text-content');
+
+  if (!btnShow || !overlay) return;
+
+  let isLoaded = false;
+
+  btnShow.addEventListener('click', async () => {
+    overlay.style.display = 'flex';
+    if (!isLoaded) {
+      try {
+        const res = await fetch('./取扱説明書.txt');
+        if (res.ok) {
+          const text = await res.text();
+          textContent.textContent = text;
+          isLoaded = true;
+        } else {
+          textContent.textContent = '取扱説明書の読み込みに失敗しました。';
+        }
+      } catch (err) {
+        textContent.textContent = '取扱説明書の読み込みエラー: ' + err.message;
+      }
+    }
+  });
+
+  btnClose.addEventListener('click', () => {
+    overlay.style.display = 'none';
+  });
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      overlay.style.display = 'none';
+    }
+  });
+}
