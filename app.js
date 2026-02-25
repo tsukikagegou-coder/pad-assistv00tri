@@ -508,7 +508,7 @@ function initCondSlots() {
       <div class="selected-conditions" id="cond-selected-${i}">
         <span style="color:var(--text-muted);font-size:0.8rem">なし</span>
       </div>
-      <div class="field-label" style="margin-top:12px">🔍 スキル名キーワード条件（任意・複数語句はスペース区切り）</div>
+      <div class="field-label" style="margin-top:12px">🔍 スキル内容キーワード条件（任意・複数語句はスペース区切り）</div>
       <input type="text" class="keyword-input" data-slot="${i}" placeholder="例：覚醒無効　ダメージ吸収" 
              style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); font-size:0.85rem;">
       <p style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">※ヘイスト、遅延必要数は後ほど入力するため、原則ここには記入不要です。</p>
