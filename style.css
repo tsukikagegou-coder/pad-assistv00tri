@@ -2109,14 +2109,55 @@ details[open]>summary::before {
 .recalc-btn.stop-state {
   background: linear-gradient(135deg, #ef4444, #dc2626) !important;
   border-color: #ff4d4d !important;
-  box-shadow: none !important;
-  /* 光らせない */
-  animation: none !important;
+  position: relative;
+  overflow: visible !important;
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4) !important;
 }
 
-.recalc-btn.stop-state .fab-bg-container {
+/* 擬似要素による虹色ボーダーは廃止（SVG背景に統合） */
+.recalc-btn.stop-state::before {
   display: none !important;
 }
+
+/* 停止状態でもSVG背景を表示し、オーラとして利用 */
+.recalc-btn.stop-state .fab-bg-container {
+  display: block !important;
+  transform: scale(1.3);
+  /* 幅を細める */
+  filter: blur(2px);
+  /* 虹色をはっきりさせる */
+  opacity: 0;
+  animation: stopAuraPulse5s 5s ease-in-out infinite !important;
+  pointer-events: none;
+}
+
+@keyframes stopAuraPulse5s {
+  0% {
+    opacity: 0;
+    transform: scale(1.1) rotate(0deg);
+  }
+
+  2% {
+    opacity: 1;
+  }
+
+  13% {
+    opacity: 1;
+    /* フェードアウト開始 */
+  }
+
+  25% {
+    opacity: 0;
+    /* 0.6秒かけて優しく消える */
+    transform: scale(1.3) rotate(360deg);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.3) rotate(360deg);
+  }
+}
+
 
 .recalc-btn.stop-state .fab-label {
   display: none !important;
