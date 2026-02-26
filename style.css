@@ -1705,23 +1705,33 @@ body::before {
   font-weight: 900;
   fill: #333;
   opacity: 0;
-  transform: translateY(20px) scale(0.5);
+  /* 修正ポイント: transform-originを中央に、boxを考慮して見切れを防止 */
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: translateY(-50px) scale(0.5);
   filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.1));
 }
 
 .opening-title.pop-in {
-  /* 弾むようなアニメーション */
-  animation: popInElastic 0.8s forwards cubic-bezier(0.17, 0.89, 0.32, 1.49);
+  /* 下方向に弾むアニメーション */
+  animation: popInDownward 0.8s forwards cubic-bezier(0.17, 0.89, 0.32, 1.49);
 }
 
-@keyframes popInElastic {
+@keyframes popInDownward {
   0% {
     opacity: 0;
-    transform: translateY(20px) scale(0.5);
+    transform: translateY(-50px) scale(0.5);
   }
 
-  70% {
-    transform: translateY(-5px) scale(1.1);
+  60% {
+    opacity: 1;
+    /* 本来の位置より少し下（オーバーシュート） */
+    transform: translateY(10px) scale(1.05);
+  }
+
+  80% {
+    /* 少し戻る */
+    transform: translateY(-2px) scale(0.98);
   }
 
   100% {
@@ -1883,4 +1893,268 @@ details[open]>summary::before {
     transform: translateY(0);
     opacity: 1;
   }
+}
+
+/* --- Floating Action Buttons (FAB) --- */
+.fab-container {
+  position: fixed;
+  bottom: 24px;
+  z-index: 9999;
+  /* モーダルより手前に来ないよう注意しつつ十分に高く */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fab-container.left {
+  left: 24px;
+}
+
+.fab-container.right {
+  right: 24px;
+}
+
+.fab-btn {
+  padding: 0 24px;
+  height: 56px;
+  border-radius: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+  /* 弾力感のある強力なイージング (Spring-like) */
+  transition: all 0.6s cubic-bezier(0.68, -0.6, 0.32, 1.6);
+  animation: slideUp 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  white-space: nowrap;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.fab-btn:hover {
+  transform: scale(1.08);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+}
+
+.fab-btn:active {
+  transform: scale(0.95);
+}
+
+.fab-btn.mini {
+  padding: 0;
+  width: 56px;
+  gap: 0;
+}
+
+.fab-btn.mini .fab-label {
+  width: 0;
+  opacity: 0;
+  margin-left: 0;
+  overflow: hidden;
+}
+
+.fab-label {
+  font-size: 1rem;
+  font-weight: 700;
+  /* 文字のフェードも弾力感に合わせる */
+  transition: all 0.5s cubic-bezier(0.68, -0.6, 0.32, 1.6);
+  opacity: 1;
+}
+
+/* --- Modal / Exclusion --- */
+.modal-overlay {
+  z-index: 10000;
+  /* モーダルを一番上に */
+}
+
+.recalc-btn .fab-label {
+  color: white;
+}
+
+.bookmark-btn .fab-label {
+  color: var(--bg-primary);
+}
+
+/* --- Exclusion / Gray-out --- */
+.excluded-state {
+  position: relative;
+  filter: grayscale(1) contrast(0.5);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.excluded-state::after {
+  content: '除外済み';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 1.2rem;
+  letter-spacing: 0.2em;
+  z-index: 10;
+  border-radius: inherit;
+}
+
+.btn-restore-exclusion {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 11;
+  pointer-events: auto;
+  background: var(--accent-red);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+/* --- SVG Icons --- */
+.icon-svg {
+  width: 1.2em;
+  height: 1.2em;
+  fill: currentColor;
+}
+
+.fab-btn .emoji {
+  font-size: 1.6rem;
+}
+
+.fab-btn:hover {
+  transform: scale(1.05) translateY(-4px);
+}
+
+.bookmark-btn {
+  background: var(--gradient-gold);
+  border: 2px solid var(--accent-gold);
+}
+
+.recalc-btn {
+  background: var(--gradient-button);
+  border: 2px solid var(--accent-purple);
+}
+
+/* --- Exclusion Effect --- */
+.exclusion-effect {
+  animation: excludeOut 0.5s ease forwards;
+  pointer-events: none;
+}
+
+@keyframes excludeOut {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  30% {
+    transform: scale(1.05);
+    background: rgba(239, 68, 68, 0.4);
+  }
+
+  100% {
+    transform: scale(0.9);
+    opacity: 0;
+    filter: grayscale(1);
+  }
+}
+
+/* --- Result Layout Improvements --- */
+.pinned-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--accent-gold);
+  color: var(--bg-primary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-left: 8px;
+}
+
+.result-base-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+
+.result-base-cell {
+  flex: 0 0 140px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 8px;
+  font-size: 0.75rem;
+}
+
+.rbc-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.rbc-name {
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.rbc-skill {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  line-height: 1.2;
+}
+
+.rbc-awakens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.rbc-awakens img {
+  width: 14px;
+  height: 14px;
+}
+
+/* --- Result Actions Extension --- */
+.btn-bookmark-card {
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 6px;
+  color: var(--text-muted);
+  transition: var(--transition);
+  font-size: 0.75rem;
+}
+
+.btn-bookmark-card:hover {
+  border-color: var(--accent-gold);
+  color: var(--accent-gold);
+  background: rgba(240, 192, 64, 0.1);
+}
+
+.btn-bookmark-card.active {
+  border-color: var(--accent-gold);
+  color: var(--bg-primary);
+  background: var(--accent-gold);
+}
+
+/* --- Bookmark Modal / List --- */
+#bookmark-modal-list .result-pattern,
+#bookmark-list-container .result-pattern {
+  margin-bottom: 24px;
+  border: 1px solid var(--accent-gold-dim);
 }

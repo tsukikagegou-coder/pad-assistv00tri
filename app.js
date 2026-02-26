@@ -43,6 +43,10 @@ let dfsIterCount = 0;
 // 固定アシスト { slotIdx: monster }
 let pinnedAssists = {};
 
+// ブックマーク候補
+let bookmarkedResults = [];
+let bookmarkFabTimer = null;
+
 // ==================== 火力覚醒ペアリング ====================
 // ベース覚醒 → ＋覚醒 のマッピング
 // STEP2ではベースのみ表示し、選択時に＋版も自動選択
@@ -909,6 +913,10 @@ async function runOptimization() {
   dfsIterCount = 0;
   showProgressUI();
 
+  // 火力解除セクションを隠す
+  const dpsSec = document.getElementById('dps-toggle-section');
+  if (dpsSec) dpsSec.style.display = 'none';
+
   // リアルタイム表示用にresult-containerをクリア
   const rc = document.getElementById('result-container');
   if (rc) rc.innerHTML = '';
@@ -925,11 +933,47 @@ async function runOptimization() {
   } catch (err) {
     hideProgressUI();
     console.error('Optimization error:', err);
+
+    // 火力優先が原因で0件の場合の救済措置
+    const hasDpsPriority = slotConditions.some(c => c.dpsPriority);
+    if (hasDpsPriority) {
+      showDpsToggleSection();
+    }
+
     const rc2 = document.getElementById('result-container');
     if (rc2) {
       rc2.innerHTML = `<div class="empty-state"><div class="emoji-lg">⚠️</div><p>${err.message}</p></div>`;
     }
   }
+}
+
+function showDpsToggleSection() {
+  const sec = document.getElementById('dps-toggle-section');
+  const container = document.getElementById('dps-priority-toggles-container');
+  if (!sec || !container) return;
+  sec.style.display = 'block';
+  container.innerHTML = '';
+
+  slotConditions.forEach((c, i) => {
+    if (c.dpsPriority) {
+      const div = document.createElement('div');
+      div.className = 'toggle-row';
+      div.innerHTML = `
+        <span class="toggle-label">スロット${i + 1} の火力優先を解除</span>
+        <label class="toggle-switch">
+          <input type="checkbox" onchange="toggleDpsPriority(${i}, this.checked)">
+          <span class="toggle-slider-fire"></span>
+        </label>
+      `;
+      container.appendChild(div);
+    }
+  });
+}
+
+function toggleDpsPriority(slotIdx, isChecked) {
+  // ONOFFを反転させて再計算
+  slotConditions[slotIdx].dpsPriority = !isChecked;
+  runOptimization();
 }
 
 async function optimize() {
@@ -1162,7 +1206,7 @@ function scoreMonsterWithScarcity(monster, slotIdx, scarcityMap, fulfilledAwaken
 async function runDFS(slotCandidates, searchOrder, initialAwakens, initialSB, totalCombinations) {
   let bestSolutions = [];
   let fullMatchSolutions = []; // 完全一致の解をリアルタイム表示用に別管理
-  const MAX_RESULTS = 5;
+  const MAX_RESULTS = 15;
   dfsIterCount = 0;
   const YIELD_INTERVAL = 3000; // N反復ごとにUIに制御を返す
 
@@ -1542,9 +1586,19 @@ function buildResultCard(result, idx, isRealtime) {
   card.className = `result-pattern ${isRealtime ? 'realtime-result' : ''}`;
   const met = isFullyMet(result);
 
+  // ブックマークボタンと充足判定をヘッダーに配置
+  const isBookmarked = bookmarkedResults.some(b => JSON.stringify(b.picks.map(p => p.no)) === JSON.stringify(result.picks.map(p => p.no)));
+
+  const sig = JSON.stringify(result.picks.map(p => p.no));
   let html = `
     <div class="result-header">
-      <span class="result-rank">${idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`} パターン${idx + 1}</span>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="result-rank">${idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`} パターン${idx + 1}</span>
+        <button class="btn-bookmark-card ${isBookmarked ? 'active' : ''}" data-idx="${idx}" data-sig='${sig}' title="ブックマークを保存/解除">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M17,3H7C5.9,3,5,3.9,5,5v16l7-3l7,3V5C19,3.9,18.1,3,17,3z"></path></svg>
+          <span class="btn-text">${isBookmarked ? 'ブックマーク解除' : 'ブックマーク'}</span>
+        </button>
+      </div>
       <span class="result-score ${met ? 'ok' : ''}">${met ? '✅ 条件充足' : '⚠️ 部分充足'}</span>
     </div>
   `;
@@ -1560,12 +1614,20 @@ function buildResultCard(result, idx, isRealtime) {
     const hasDps = allAw.some(a => selectedDpsAwakens.has(a));
     const needsDpsWarning = slotConditions[i].dpsPriority && !hasDps;
 
+    const isPinned = pinnedAssists[i] && pinnedAssists[i].no === m.no;
+    // 他の全スロットのいずれかで固定されているモンスターかどうかも判定（同期表示用）
+    const isMonsterPinnedAnywhere = Object.values(pinnedAssists).some(p => p.no === m.no);
+    const isExcluded = excludedMonsterNos.has(m.no);
+
     html += `
-      <div class="result-assist-card ${needsDpsWarning ? 'dps-warning' : ''}">
+      <div class="result-assist-card ${needsDpsWarning ? 'dps-warning' : ''} ${isExcluded ? 'excluded-state' : ''}" data-monster-no="${m.no}">
+        ${isExcluded ? `<button class="btn-restore-exclusion" data-no="${m.no}">除外解除</button>` : ''}
         <div class="assist-card-header">
           <span class="assist-slot-label">スロット${i + 1}${baseMon ? ` (${baseMon.name})` : ''}</span>
           <div class="assist-card-actions">
-            <button class="btn-pin" data-slot="${i}" data-no="${m.no}" title="このアシストを固定">📌</button>
+            <button class="btn-pin ${isPinned || (isMonsterPinnedAnywhere && !pinnedAssists[i]) ? 'pinned' : ''}" data-slot="${i}" data-no="${m.no}" title="${isPinned ? '固定解除' : 'このアシストを固定'}">
+              ${isPinned || (isMonsterPinnedAnywhere && !pinnedAssists[i]) ? '📍固定中' : '📌'}
+            </button>
             <button class="btn-exclude" data-no="${m.no}">❌ 除外</button>
           </div>
         </div>
@@ -1644,15 +1706,41 @@ function displayResults(results) {
     let baseHtml = '<div class="result-base-row">';
     for (let i = 0; i < 6; i++) {
       const b = baseMonsters[i];
-      baseHtml += `<div class="result-base-cell">
-        <div class="rbc-label">スロット${i + 1} ベース</div>
-        <div class="rbc-name">${b ? `No.${b.no} ${b.name}` : '未指定'}</div>
-      </div>`;
+      if (b) {
+        const skill = getSkillInfo(b);
+        const awakens = getActiveAwakens(b);
+        baseHtml += `
+          <div class="result-base-cell">
+            <div class="rbc-label">スロット${i + 1} ベース</div>
+            <div class="rbc-name" title="${b.name}">No.${b.no} ${b.name}</div>
+            <div class="rbc-skill">
+              ${skill ? `<strong>${skill.name}</strong><br>(CT:${skill.baseTurn}→${skill.minTurn})<br>${skill.description.substring(0, 30)}${skill.description.length > 30 ? '...' : ''}` : 'スキル不明'}
+            </div>
+            <div class="rbc-awakens">
+              ${awakens.slice(0, 8).map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+              ${awakens.length > 8 ? '...' : ''}
+            </div>
+          </div>`;
+      } else {
+        baseHtml += `
+          <div class="result-base-cell">
+            <div class="rbc-label">スロット${i + 1} ベース</div>
+            <div class="rbc-name">未指定</div>
+          </div>`;
+      }
     }
     baseHtml += '</div>';
     baseDisplay.innerHTML = baseHtml;
   } else {
     baseDisplay.innerHTML = '';
+  }
+
+  // 15回表示に合わせ、FABを表示
+  const fabRecalc = document.getElementById('fab-recalc');
+  const fabBookmarks = document.getElementById('fab-bookmarks');
+  if (fabRecalc) fabRecalc.style.display = 'block';
+  if (fabBookmarks) {
+    fabBookmarks.style.display = bookmarkedResults.length > 0 ? 'block' : 'none';
   }
 
   if (results.length === 0) {
@@ -1661,6 +1749,14 @@ function displayResults(results) {
     }
     return;
   }
+
+  // ソート：完全一致を優先しつつスコア順
+  results.sort((a, b) => {
+    const metA = isFullyMet(a) ? 1 : 0;
+    const metB = isFullyMet(b) ? 1 : 0;
+    if (metA !== metB) return metB - metA;
+    return b.score - a.score;
+  });
 
   // ★修正: 完全一致/部分一致の件数を分けて表示
   const fullMatchCount = results.filter(r => isFullyMet(r)).length;
@@ -1684,23 +1780,52 @@ function displayResults(results) {
     container.appendChild(card);
   });
 
+  // ブックマーク表示を更新
+  renderBookmarkSection();
+
   // イベント登録
-  bindResultEvents(container, recalcBtn);
+  bindResultEvents(container, recalcBtn, results);
 }
 
-function bindResultEvents(container, recalcBtn) {
+function bindResultEvents(container, recalcBtn, results) {
   // 除外ボタンイベント
   container.querySelectorAll('.btn-exclude').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const monsterNo = parseInt(btn.dataset.no);
+
+      // 連動エフェクト
+      const allSimilarCards = document.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"]`);
+      allSimilarCards.forEach(c => c.classList.add('exclusion-effect'));
+
+      // アニメーション後にグレーアウト状態へ移行
+      await new Promise(r => setTimeout(r, 400));
+      excludedMonsterNos.add(monsterNo);
+
+      allSimilarCards.forEach(c => {
+        c.classList.remove('exclusion-effect');
+        c.classList.add('excluded-state');
+        // 解除ボタンを動的に追加
+        if (!c.querySelector('.btn-restore-exclusion')) {
+          const restoreBtn = document.createElement('button');
+          restoreBtn.className = 'btn-restore-exclusion';
+          restoreBtn.dataset.no = monsterNo;
+          restoreBtn.textContent = '除外解除';
+          restoreBtn.addEventListener('click', () => restoreExclusion(monsterNo));
+          c.prepend(restoreBtn);
+        }
+      });
+
+      updateExclusionUI();
+      if (recalcBtn) recalcBtn.style.display = 'inline-flex';
+      // runOptimization(); // フィードバックに基づき自動計算を停止
+    });
+  });
+
+  // 除外解除イベント
+  container.querySelectorAll('.btn-restore-exclusion').forEach(btn => {
     btn.addEventListener('click', () => {
-      const monster = assistMonsters.find(m => m.no === parseInt(btn.dataset.no));
-      if (monster) {
-        excludedMonsterNos.add(monster.no);
-        updateExclusionUI();
-        if (recalcBtn) recalcBtn.style.display = 'inline-flex';
-        btn.textContent = '除外済み';
-        btn.disabled = true;
-        btn.style.opacity = 0.5;
-      }
+      const monsterNo = parseInt(btn.dataset.no);
+      restoreExclusion(monsterNo);
     });
   });
 
@@ -1717,40 +1842,162 @@ function bindResultEvents(container, recalcBtn) {
   container.querySelectorAll('.btn-pin').forEach(btn => {
     btn.addEventListener('click', () => {
       const slotIdx = parseInt(btn.dataset.slot);
-      const monNo = parseInt(btn.dataset.no);
-      const monster = assistMonsters.find(m => m.no === monNo);
-      if (monster) {
-        if (pinnedAssists[slotIdx] && pinnedAssists[slotIdx].no === monNo) {
-          // 既に固定済み → 解除
-          delete pinnedAssists[slotIdx];
-          btn.classList.remove('pinned');
-          btn.textContent = '📌';
-        } else {
-          pinnedAssists[slotIdx] = monster;
-          btn.classList.add('pinned');
-          btn.textContent = '📌固定中';
-        }
-        updatePinnedUI();
+      const monsterNo = parseInt(btn.dataset.no);
+      const monster = assistMonsters.find(m => m.no === monsterNo);
+      if (!monster) return;
+
+      if (pinnedAssists[slotIdx] && pinnedAssists[slotIdx].no === monsterNo) {
+        delete pinnedAssists[slotIdx];
+      } else {
+        pinnedAssists[slotIdx] = monster;
       }
+
+      // 表示中の全パターンの同一モンスターのバッジを同期更新
+      const allSameMonsters = document.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"] .btn-pin`);
+      const isCurrentMonsterPinnedAnywhere = Object.values(pinnedAssists).some(p => p.no === monsterNo);
+
+      allSameMonsters.forEach(pinBtn => {
+        const sIdx = parseInt(pinBtn.dataset.slot);
+        const isActuallyPinnedInThisSlot = pinnedAssists[sIdx] && pinnedAssists[sIdx].no === monsterNo;
+
+        if (isActuallyPinnedInThisSlot || (isCurrentMonsterPinnedAnywhere && !pinnedAssists[sIdx])) {
+          pinBtn.classList.add('pinned');
+          pinBtn.textContent = '📍固定中';
+        } else {
+          pinBtn.classList.remove('pinned');
+          pinBtn.textContent = '📌';
+        }
+      });
+
+      updatePinnedUI();
+      // runOptimization(); // フィードバックに基づき自動計算を停止
     });
   });
 
-  // 不足覚醒再計算ボタン
-  container.querySelectorAll('.btn-recalc-awaken').forEach(btn => {
+  // ブックマークボタン
+  container.querySelectorAll('.btn-bookmark-card').forEach(btn => {
     btn.addEventListener('click', () => {
-      const aid = parseInt(btn.dataset.awakenId);
-      const needed = parseInt(btn.dataset.needed);
-      // 必要覚醒を追加/更新
-      partyRequiredAwakens[aid] = (partyRequiredAwakens[aid] || 0) + needed;
-      updatePartyRequiredDisplay();
-      // パーティ覚醒グリッドのバッジも更新
-      const gridBtn = document.querySelector(`#party-awakens-grid .icon-btn[data-id="${aid}"]`);
-      if (gridBtn) updatePartyBadge(gridBtn, aid);
-      runOptimization();
+      const idx = parseInt(btn.dataset.idx);
+      const res = results ? results[idx] : null;
+      if (!res) return;
+      toggleBookmark(res, btn);
     });
   });
 
   updateExclusionUI();
+}
+
+function restoreExclusion(monsterNo) {
+  excludedMonsterNos.delete(monsterNo);
+  updateExclusionUI();
+  // 表示のグレーアウトを解除
+  document.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"]`).forEach(c => {
+    c.classList.remove('excluded-state');
+    const rb = c.querySelector('.btn-restore-exclusion');
+    if (rb) rb.remove();
+  });
+}
+
+function toggleBookmark(result, clickedBtn = null) {
+  const sig = JSON.stringify(result.picks.map(p => p.no));
+  const idx = bookmarkedResults.findIndex(b => JSON.stringify(b.picks.map(p => p.no)) === sig);
+  const isAdding = idx < 0;
+
+  if (isAdding) {
+    bookmarkedResults.push(result);
+  } else {
+    bookmarkedResults.splice(idx, 1);
+  }
+
+  // 同一結果（同じモンスターNoの組み合わせ）を指すすべてのボタンの表示を同期
+  // クオーテーションのエスケープに注意
+  const escapedSig = sig.replace(/'/g, "\\'");
+  const syncButtons = document.querySelectorAll(`.btn-bookmark-card[data-sig='${escapedSig}']`);
+
+  syncButtons.forEach(btn => {
+    btn.classList.toggle('active', isAdding);
+    const textSpan = btn.querySelector('.btn-text');
+    if (textSpan) {
+      textSpan.textContent = isAdding ? 'ブックマーク解除' : 'ブックマーク';
+    }
+  });
+
+  renderBookmarkSection();
+  updateBookmarkFAB();
+}
+
+function renderBookmarkSection() {
+  const section = document.getElementById('bookmark-section');
+  const container = document.getElementById('bookmark-list-container');
+  const countSpan = document.getElementById('bookmark-count');
+  const modalList = document.getElementById('bookmark-modal-list');
+  const emptyMsg = document.getElementById('bookmark-empty-msg');
+
+  if (bookmarkedResults.length === 0) {
+    if (section) section.style.display = 'none';
+    if (emptyMsg) emptyMsg.style.display = 'block';
+    if (modalList) modalList.innerHTML = '';
+    return;
+  }
+
+  if (section) section.style.display = 'block';
+  if (countSpan) countSpan.textContent = bookmarkedResults.length;
+  if (emptyMsg) emptyMsg.style.display = 'none';
+
+  const renderTo = (el) => {
+    el.innerHTML = '';
+    bookmarkedResults.forEach((res, i) => {
+      const card = buildResultCard(res, i, false);
+      // ブックマーク内はブックマークボタンのテキストを「ブックマーク解除」にする
+      const bBtn = card.querySelector('.btn-bookmark-card');
+      if (bBtn) {
+        const textSpan = bBtn.querySelector('.btn-text');
+        if (textSpan) textSpan.textContent = 'ブックマーク解除';
+        bBtn.classList.add('active');
+        bBtn.addEventListener('click', () => {
+          toggleBookmark(res);
+          // 両方のリストを再描画
+          renderBookmarkSection();
+          // メインの結果表示側のボタン状態もあれば同期させたいが、再描画されるので基本OK
+        });
+      }
+      el.appendChild(card);
+    });
+  };
+
+  if (container) renderTo(container);
+  if (modalList) renderTo(modalList);
+}
+
+function updateBookmarkFAB() {
+  const fab = document.getElementById('fab-bookmarks');
+  if (!fab) return;
+
+  const hasBookmarks = bookmarkedResults.length > 0;
+  fab.style.display = hasBookmarks ? 'block' : 'none';
+
+  if (hasBookmarks) {
+    const btn = fab.querySelector('.fab-btn');
+    if (!btn) return;
+
+    // タイマーリセット（再展開）
+    if (bookmarkFabTimer) clearTimeout(bookmarkFabTimer);
+    btn.classList.remove('mini');
+
+    // 1.5秒後に縮小
+    bookmarkFabTimer = setTimeout(() => {
+      btn.classList.add('mini');
+      bookmarkFabTimer = null;
+    }, 1500);
+  }
+}
+
+function toggleBookmarkOverlay() {
+  const modal = document.getElementById('bookmark-modal-overlay');
+  if (!modal) return;
+  const isShow = modal.style.display === 'flex';
+  modal.style.display = isShow ? 'none' : 'flex';
+  if (!isShow) renderBookmarkSection();
 }
 
 function updateExclusionUI() {
@@ -1909,7 +2156,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => {
       opening.style.display = 'none';
     }, 600);
-    console.log(`データ読込完了: 全${allMonsters.length}体, アシスト候補${assistMonsters.length}体, スキル${Object.keys(skillMap).length}件`);
+    console.log(`データ読込完了: 全${allMonsters.length} 体, アシスト候補${assistMonsters.length} 体, スキル${Object.keys(skillMap).length} 件`);
   } else {
     // 失敗時は通常のローディング表示に切り替え
     opening.style.display = 'none';
