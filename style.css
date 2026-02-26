@@ -2038,6 +2038,148 @@ details[open]>summary::before {
 .recalc-btn {
   background: var(--gradient-button);
   border: 2px solid var(--accent-purple);
+  position: relative;
+  /* For burst effect positioning */
+}
+
+/* --- FAB State Animations --- */
+
+/* 展開アニメーション (縮小状態から通常状態への復帰) */
+.fab-expand {
+  animation: fabExpand 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+@keyframes fabExpand {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* SVGベースの虹色背景用コンテナ */
+.fab-bg-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  z-index: -1;
+  display: none;
+  pointer-events: none;
+}
+
+.recalc-btn.loading-state .fab-bg-container {
+  display: block;
+}
+
+.fab-bg-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 回転アニメーション */
+.spin-anim {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* 虹色グラデーション用のキーフレームはSVGに移行したため削除 */
+
+.recalc-btn.loading-state {
+  /* 背景は背面のSVGに任せるため透明に */
+  background: transparent !important;
+  border: none !important;
+  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.4);
+}
+
+/* 計算停止状態 (赤色) - 背景を不透明にしてSVGを隠す */
+.recalc-btn.stop-state {
+  background: linear-gradient(135deg, #ef4444, #dc2626) !important;
+  border-color: #ff4d4d !important;
+  box-shadow: none !important;
+  /* 光らせない */
+  animation: none !important;
+}
+
+.recalc-btn.stop-state .fab-bg-container {
+  display: none !important;
+}
+
+.recalc-btn.stop-state .fab-label {
+  display: none !important;
+  /* 文字も不要 */
+}
+
+/* 弾けるエフェクト (Popping effect) */
+.burst-particle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 10001;
+  animation: burstOut 0.6s ease-out forwards;
+}
+
+@keyframes burstOut {
+  0% {
+    transform: translate(0, 0) scale(1.5);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate(var(--tx), var(--ty)) scale(0);
+    opacity: 0;
+  }
+}
+
+.loading-icon-container {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* SVGベースの滑らかなプレミアムローダー */
+.premium-loader-svg {
+  width: 28px;
+  height: 28px;
+  animation: spin 1s linear infinite;
+}
+
+.premium-loader-svg circle {
+  fill: none;
+  stroke: white;
+  /* 白に戻す */
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-dasharray: 60, 200;
+  stroke-dashoffset: 0;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.6));
+}
+
+.recalc-btn.loading-state .loading-icon-container {
+  display: flex !important;
+}
+
+.recalc-btn.loading-state #recalc-icon-default,
+.recalc-btn.stop-state #recalc-icon-default,
+.recalc-btn.loading-state .fab-label {
+  display: none !important;
 }
 
 /* --- Exclusion Effect --- */

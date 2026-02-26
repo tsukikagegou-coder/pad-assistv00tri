@@ -908,6 +908,29 @@ function hideProgressUI() {
 }
 
 async function runOptimization() {
+  const btn = document.getElementById('recalc-btn-el');
+  const label = document.getElementById('recalc-label');
+  const iconDefault = document.getElementById('recalc-icon-default');
+  const iconLoading = document.getElementById('recalc-icon-loading');
+  const iconStop = document.getElementById('recalc-icon-stop');
+
+  // アニメーション: 縮小 (丸いアイコン化)
+  if (btn) {
+    btn.classList.add('mini');
+    btn.classList.add('loading-state');
+  }
+
+  // 5秒後にボタンを展開せず、アイコンのみ（円形）の停止状態に切り替え
+  setTimeout(() => {
+    if (btn && btn.classList.contains('loading-state')) {
+      btn.classList.remove('loading-state');
+      // miniを維持して正円にする。展開アニメーションは不要
+      btn.classList.add('stop-state');
+      if (iconLoading) iconLoading.style.display = 'none';
+      if (iconStop) iconStop.style.display = 'block';
+    }
+  }, 5000);
+
   goToStep(4);
   stopRequested = false;
   dfsIterCount = 0;
@@ -929,6 +952,7 @@ async function runOptimization() {
   try {
     const results = await optimize();
     hideProgressUI();
+    resetRecalcBtn();
     displayResults(results);
   } catch (err) {
     hideProgressUI();
@@ -2202,4 +2226,59 @@ function initInfoModal() {
       overlay.style.display = 'none';
     }
   });
+}
+
+// FABクリックハンドラ
+function handleRecalcClick() {
+  const btn = document.getElementById('recalc-btn-el');
+  triggerPopEffect(document.getElementById('fab-recalc'));
+
+  if (btn && btn.classList.contains('stop-state')) {
+    stopOptimization();
+    resetRecalcBtn();
+  } else {
+    runOptimization();
+  }
+}
+
+// 弾けるエフェクト
+function triggerPopEffect(parent) {
+  if (!parent) return;
+  const colors = ['#8b5cf6', '#d946ef', '#f59e0b', '#10b981', '#3b82f6'];
+  const count = 12;
+
+  for (let i = 0; i < count; i++) {
+    const p = document.createElement('div');
+    p.className = 'burst-particle';
+    const angle = (i / count) * Math.PI * 2;
+    const dist = 40 + Math.random() * 40;
+    const tx = Math.cos(angle) * dist;
+    const ty = Math.sin(angle) * dist;
+
+    p.style.setProperty('--tx', `${tx}px`);
+    p.style.setProperty('--ty', `${ty}px`);
+    p.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+    p.style.left = '50%';
+    p.style.top = '50%';
+
+    parent.appendChild(p);
+    setTimeout(() => p.remove(), 700);
+  }
+}
+
+// 再計算ボタンの状態リセット
+function resetRecalcBtn() {
+  const btn = document.getElementById('recalc-btn-el');
+  const label = document.getElementById('recalc-label');
+  const iconDefault = document.getElementById('recalc-icon-default');
+  const iconLoading = document.getElementById('recalc-icon-loading');
+  const iconStop = document.getElementById('recalc-icon-stop');
+
+  if (btn) {
+    btn.classList.remove('fab-shrink', 'fab-expand', 'loading-state', 'stop-state', 'mini');
+    if (label) label.textContent = '再計算';
+    if (iconDefault) iconDefault.style.display = 'block';
+    if (iconLoading) iconLoading.style.display = 'none';
+    if (iconStop) iconStop.style.display = 'none';
+  }
 }
