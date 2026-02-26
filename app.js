@@ -1721,7 +1721,6 @@ function buildResultCard(result, idx, isRealtime) {
 function displayResults(results) {
   const container = document.getElementById('result-container');
   const desc = document.getElementById('result-desc');
-  const recalcBtn = document.getElementById('btn-recalc');
   const baseDisplay = document.getElementById('result-base-display');
 
   // ベースモンスター表示
@@ -1794,7 +1793,6 @@ function displayResults(results) {
   }
 
   if (container) container.innerHTML = '';
-  if (recalcBtn) recalcBtn.style.display = excludedMonsterNos.size > 0 ? 'inline-flex' : 'none';
 
   // 固定セクションを更新
   updatePinnedUI();
@@ -1808,10 +1806,10 @@ function displayResults(results) {
   renderBookmarkSection();
 
   // イベント登録
-  bindResultEvents(container, recalcBtn, results);
+  bindResultEvents(container, results);
 }
 
-function bindResultEvents(container, recalcBtn, results) {
+function bindResultEvents(container, results) {
   // 除外ボタンイベント
   container.querySelectorAll('.btn-exclude').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -1840,7 +1838,6 @@ function bindResultEvents(container, recalcBtn, results) {
       });
 
       updateExclusionUI();
-      if (recalcBtn) recalcBtn.style.display = 'inline-flex';
       // runOptimization(); // フィードバックに基づき自動計算を停止
     });
   });

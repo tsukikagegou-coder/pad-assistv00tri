@@ -209,20 +209,9 @@
           <div class="progress-bar-wrap">
             <div class="progress-bar-inner" id="progress-bar-inner"></div>
           </div>
-          <button class="btn btn-danger" onclick="stopOptimization()">⏹ 計算を止める</button>
         </div>
       </div>
 
-      <!-- 固定モンスター管理セクション -->
-      <div id="pinned-section" style="display:none">
-        <div class="section-card" style="border:2px solid var(--accent-gold)">
-          <div class="section-title"><span class="emoji">📌</span> 固定済みアシスト</div>
-          <div id="pinned-list"></div>
-          <div style="margin-top:10px;text-align:right">
-            <button class="btn btn-outline btn-sm" onclick="clearAllPins()">全固定を解除して再計算</button>
-          </div>
-        </div>
-      </div>
 
       <div class="section-card">
         <div class="section-title"><span class="emoji">🏆</span> 組み合わせ候補</div>
@@ -246,6 +235,17 @@
         </details>
       </div>
 
+      <!-- 固定モンスター管理セクション -->
+      <div id="pinned-section" style="display:none">
+        <div class="section-card" style="border:2px solid var(--accent-gold)">
+          <div class="section-title"><span class="emoji">📌</span> 固定済みアシスト</div>
+          <div id="pinned-list"></div>
+          <div style="margin-top:10px;text-align:right">
+            <button class="btn btn-outline btn-sm" onclick="clearAllPins()">全固定を解除して再計算</button>
+          </div>
+        </div>
+      </div>
+
       <!-- 除外リスト管理 -->
       <div class="section-card" id="exclusion-manager-section" style="display:none">
         <div class="section-title"><span class="emoji">🚫</span> 除外済みモンスターの管理</div>
@@ -257,12 +257,6 @@
 
       <div class="step-nav">
         <button class="btn btn-outline" onclick="goToStep(3)">◀ 条件を変更</button>
-        <div style="display: flex; flex-direction: column; align-items: flex-end; max-width: 60%; text-align: right;">
-          <span
-            style="font-size:0.75rem; color:var(--text-muted); margin-bottom:8px;">※3体程度固定化した上で再計算するとより精度が上がりますが、時間がかかります（4体固定推奨）</span>
-          <button class="btn btn-primary" id="btn-recalc" onclick="handleRecalcClick()" style="display:none">🔄
-            除外して再計算</button>
-        </div>
       </div>
     </div>
 
