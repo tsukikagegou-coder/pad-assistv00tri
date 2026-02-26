@@ -918,18 +918,38 @@ async function runOptimization() {
   if (btn) {
     btn.classList.add('mini');
     btn.classList.add('loading-state');
+    btn.classList.remove('hint-state', 'stop-state');
+    if (iconLoading) iconLoading.style.display = 'flex';
+    if (iconDefault) iconDefault.style.display = 'none';
+    if (iconStop) iconStop.style.display = 'none';
   }
 
-  // 5秒後にボタンを展開せず、アイコンのみ（円形）の停止状態に切り替え
+  // 1.5秒後に「赤いボタンに変化＆展開」し、「計算停止はここをクリック」と表示
   setTimeout(() => {
     if (btn && btn.classList.contains('loading-state')) {
+      btn.classList.remove('mini');
+      btn.classList.add('hint-state');
       btn.classList.remove('loading-state');
-      // miniを維持して正円にする。展開アニメーションは不要
-      btn.classList.add('stop-state');
+      // アイコンの切り替えはCSS側でopacity制御されるため、display操作を最小限に
       if (iconLoading) iconLoading.style.display = 'none';
-      if (iconStop) iconStop.style.display = 'block';
+      if (iconStop) iconStop.style.display = 'flex';
+      if (label) {
+        label.textContent = '計算停止はここをクリック';
+        // style.display = 'block' は初期化時にセット済みかCSSで制御
+      }
     }
-  }, 5000);
+  }, 1500);
+
+  // さらに2.5秒後（計4.0秒後）に、縮小し、ストップマークだけのアイコンに（連続性のあるアニメーション）
+  setTimeout(() => {
+    if (btn && btn.classList.contains('hint-state')) {
+      btn.classList.remove('hint-state');
+      btn.classList.add('mini');
+      btn.classList.add('stop-state');
+      // labelの非表示は、CSSの .mini .fab-label で opacity:0 と width:0 になるため、
+      // 0.8sのtransitionの間、徐々に消えていく。
+    }
+  }, 4000);
 
   goToStep(4);
   stopRequested = false;
@@ -2272,8 +2292,11 @@ function resetRecalcBtn() {
   const iconStop = document.getElementById('recalc-icon-stop');
 
   if (btn) {
-    btn.classList.remove('fab-shrink', 'fab-expand', 'loading-state', 'stop-state', 'mini');
-    if (label) label.textContent = '再計算';
+    btn.classList.remove('fab-shrink', 'fab-expand', 'loading-state', 'stop-state', 'hint-state', 'mini');
+    if (label) {
+      label.textContent = '再計算';
+      label.style.display = 'block';
+    }
     if (iconDefault) iconDefault.style.display = 'block';
     if (iconLoading) iconLoading.style.display = 'none';
     if (iconStop) iconStop.style.display = 'none';

@@ -1924,8 +1924,8 @@ details[open]>summary::before {
   gap: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
   cursor: pointer;
-  /* 弾力感のある強力なイージング (Spring-like) */
-  transition: all 0.6s cubic-bezier(0.68, -0.6, 0.32, 1.6);
+  /* 弾力感のある強力なイージング (Spring-like) - 縮小を少しゆっくりにするため0.8sに延長 */
+  transition: all 0.8s cubic-bezier(0.68, -0.6, 0.32, 1.4);
   animation: slideUp 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
   white-space: nowrap;
   overflow: hidden;
@@ -1948,17 +1948,22 @@ details[open]>summary::before {
 }
 
 .fab-btn.mini .fab-label {
-  width: 0;
+  max-width: 0;
   opacity: 0;
   margin-left: 0;
-  overflow: hidden;
+  padding: 0;
 }
 
 .fab-label {
+  display: block;
+  /* display: none を回避 */
   font-size: 1rem;
   font-weight: 700;
-  /* 文字のフェードも弾力感に合わせる */
-  transition: all 0.5s cubic-bezier(0.68, -0.6, 0.32, 1.6);
+  max-width: 300px;
+  overflow: hidden;
+  transition: max-width 0.8s cubic-bezier(0.68, -0.6, 0.32, 1.4),
+    opacity 0.4s ease,
+    margin 0.8s cubic-bezier(0.68, -0.6, 0.32, 1.4);
   opacity: 1;
 }
 
@@ -2087,7 +2092,7 @@ details[open]>summary::before {
 
 /* 回転アニメーション */
 .spin-anim {
-  animation: spin 1s linear infinite;
+  animation: spin 1.5s linear infinite;
 }
 
 @keyframes spin {
@@ -2164,6 +2169,65 @@ details[open]>summary::before {
   /* 文字も不要 */
 }
 
+/* ヒント表示状態 (赤色で展開してテキストを表示) */
+.recalc-btn.hint-state {
+  background: var(--gradient-danger) !important;
+  border-color: #ff4d4d !important;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.5);
+  animation: hintPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes hintPulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
+  }
+
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 0 30px rgba(139, 92, 246, 0.7);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
+  }
+}
+
+.recalc-btn.hint-state .fab-label {
+  display: block !important;
+  opacity: 1;
+  max-width: 300px;
+  color: white;
+  white-space: nowrap;
+}
+
+.recalc-btn .icon-svg,
+.recalc-btn .loading-icon-container {
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+/* 状態ごとのアイコン表示制御（display:noneを避け、opacityでアニメーション） */
+.recalc-btn.mini #recalc-label {
+  max-width: 0;
+  opacity: 0;
+}
+
+.recalc-btn.loading-state #recalc-icon-default,
+.recalc-btn.stop-state #recalc-icon-default,
+.recalc-btn.hint-state #recalc-icon-default {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.recalc-btn.stop-state .loading-icon-container,
+.recalc-btn.hint-state .loading-icon-container {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
 /* 弾けるエフェクト (Popping effect) */
 .burst-particle {
   position: absolute;
@@ -2199,7 +2263,7 @@ details[open]>summary::before {
 .premium-loader-svg {
   width: 28px;
   height: 28px;
-  animation: spin 1s linear infinite;
+  animation: spin 1.5s linear infinite;
 }
 
 .premium-loader-svg circle {
