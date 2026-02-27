@@ -10,6 +10,8 @@ let awakenNames = {};
 let attrNames = {};
 let typeNames = {};
 let awakenMultipliers = {}; // 覚醒ID → 火力倍率（CSVから読み込み）
+let awakenNameToIdMap = {};  // 覚醒名→覚醒ID 逆引きマップ（消滅アシスト付与覚醒パース用）
+let vanishGrantedCache = {}; // モンスターNo → 付与覚醒ID配列キャッシュ
 
 // ==================== UI状態 ====================
 let currentStep = 0;
@@ -39,6 +41,12 @@ let delayAsSB = false;
 
 // 除外リスト
 let excludedMonsterNos = new Set();
+
+// 同種アシスト複数採用
+let allowDuplicateAssists = false;  // STEP3トグル
+let duplicateMaxCount = 2;          // 初期値: 2体まで
+// 個別モンスターの採用数制限 { monsterNo: maxCount }
+let monsterDupLimits = {};
 
 // 計算制御
 let stopRequested = false;
@@ -346,6 +354,8 @@ async function loadCSVMappings() {
         if (!isNaN(id) && !isNaN(mult)) awakenMultipliers[id] = mult;
       }
     });
+    // 覚醒名→ID 逆引きマップを構築（消滅アシスト付与覚醒パース用）
+    awakenNameToIdMap = buildAwakenNameToIdMap();
   } catch (err) { console.warn('CSV mapping load warning:', err); }
 }
 
@@ -358,6 +368,109 @@ function getActiveAwakens(monster) {
 function getAllAwakens(monster) {
   // 覚醒アシスト(49)含めて全覚醒を返す（0は除外）
   return (monster.awakens || []).filter(a => a !== 0);
+}
+
+// ==================== 消滅アシスト: 付与覚醒パース ====================
+
+/**
+ * 覚醒名→覚醒ID の逆引きマップを構築
+ * スキル説明文に記載される覚醒名の表記ゆれ（全角/半角＋、括弧付き、x/×）に対応
+ */
+function buildAwakenNameToIdMap() {
+  const map = {};
+  for (const [idStr, name] of Object.entries(awakenNames)) {
+    if (!name || name === 'null' || name === '-') continue;
+    const nid = parseInt(idStr);
+    // 原本
+    map[name] = nid;
+    // 全角＋→半角+ に正規化した版
+    const halfPlus = name.replace(/＋/g, '+');
+    if (halfPlus !== name) map[halfPlus] = nid;
+    // 括弧を除去した版（例: "超コンボ強化（10強）" → "超コンボ強化"）
+    const noParens = name.replace(/[（(][^）)]*[）)]/g, '').trim();
+    if (noParens !== name) {
+      map[noParens] = nid;
+      const noParensHalf = noParens.replace(/＋/g, '+');
+      if (noParensHalf !== noParens) map[noParensHalf] = nid;
+    }
+    // x→× の正規化（列強化x3等）
+    const xToTimes = name.replace(/x/g, '×');
+    if (xToTimes !== name) map[xToTimes] = nid;
+    // ×→x の正規化
+    const timesToX = name.replace(/×/g, 'x');
+    if (timesToX !== name) map[timesToX] = nid;
+  }
+  // 特殊な表記ゆれ対応
+  if (awakenNames[132]) map['アフタヌーンティー'] = 132;  // CSV: アフタヌーンティ
+  return map;
+}
+
+/**
+ * 消滅アシストかどうかを判定
+ * @param {Object} monster - モンスターオブジェクト
+ * @returns {boolean}
+ */
+function isVanishingAssist(monster) {
+  const s = getSkillInfo(monster);
+  if (!s) return false;
+  return (s.description || '').includes('このアシストが消滅');
+}
+
+/**
+ * 消滅アシストのスキル説明文から付与される覚醒スキルIDの配列をパースする
+ * 消滅アシストでない場合はnullを返す
+ * @param {Object} monster - モンスターオブジェクト
+ * @returns {number[]|null} 付与覚醒ID配列またはnull
+ */
+function getVanishGrantedAwakens(monster) {
+  // キャッシュチェック
+  if (vanishGrantedCache[monster.no] !== undefined) return vanishGrantedCache[monster.no];
+
+  const s = getSkillInfo(monster);
+  if (!s) { vanishGrantedCache[monster.no] = null; return null; }
+  const desc = s.description || '';
+  if (!desc.includes('このアシストが消滅')) { vanishGrantedCache[monster.no] = null; return null; }
+
+  // [xxx] パターンを全て抽出
+  const matches = desc.match(/\[([^\]]+)\]/g);
+  if (!matches) { vanishGrantedCache[monster.no] = null; return null; }
+
+  const results = [];
+  for (const match of matches) {
+    const name = match.slice(1, -1); // 括弧除去
+    // そのまま検索
+    let id = awakenNameToIdMap[name];
+    if (id === undefined) {
+      // 全角＋→半角+ に正規化して再検索
+      const norm = name.replace(/＋/g, '+').replace(/×/g, 'x');
+      id = awakenNameToIdMap[norm];
+    }
+    if (id === undefined) {
+      // 半角+→全角＋ に正規化して再検索
+      const norm2 = name.replace(/\+/g, '＋').replace(/x/g, '×');
+      id = awakenNameToIdMap[norm2];
+    }
+    if (id !== undefined) {
+      results.push(id);
+    }
+  }
+
+  const ret = results.length > 0 ? results : null;
+  vanishGrantedCache[monster.no] = ret;
+  return ret;
+}
+
+/**
+ * 覚醒充足判定用の「有効覚醒」を取得
+ * - 消滅アシスト（覚醒付与型）: 付与覚醒を返す（消滅後に有効となる覚醒）
+ * - 通常アシスト / 覚醒付与なし消滅アシスト: getActiveAwakens(monster) を返す
+ * @param {Object} monster - モンスターオブジェクト
+ * @returns {number[]} 覚醒ID配列
+ */
+function getEffectiveAwakensForSearch(monster) {
+  const granted = getVanishGrantedAwakens(monster);
+  if (granted) return granted;
+  return getActiveAwakens(monster);
 }
 
 function getMonsterSB(monster) {
@@ -658,6 +771,22 @@ function selectPreAssist(slotIdx, monster) {
   const awakens = getActiveAwakens(monster);
   const skill = getSkillInfo(monster);
 
+  let awakensHtml = '';
+  if (isVanishingAssist(monster) && getVanishGrantedAwakens(monster)) {
+    const granted = getVanishGrantedAwakens(monster);
+    awakensHtml = `
+      <div class="vanish-original">
+        ${awakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+      </div>
+      <span class="vanish-plus">＋</span>
+      <div class="vanish-granted">
+        ${granted.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+      </div>
+    `;
+  } else {
+    awakensHtml = awakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('');
+  }
+
   pinned.innerHTML = `
     <div class="pre-assist-card">
       <div class="pre-assist-header">
@@ -674,7 +803,7 @@ function selectPreAssist(slotIdx, monster) {
         ${types.map(t => `<img src="${typeIcon(t)}" title="${typeName(t)}">`).join('')}
       </div>
       <div class="assist-awakens">
-        ${awakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+        ${awakensHtml}
       </div>
       <div class="assist-skill" style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
         ${skill ? `${skill.name} (CT: ${skill.baseTurn}→${skill.minTurn})` : ''}
@@ -1270,20 +1399,200 @@ function hideProgressUI() {
   if (ps) ps.style.display = 'none';
 }
 
-async function runOptimization() {
-  // 「この条件で検索」ボタンにバブルエフェクト
+function createBubbleEffect(btnRect) {
+  const colors = ['#f0c040', '#ffffff', '#ff9900', '#f5d160'];
+  for (let i = 0; i < 15; i++) {
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble-particle';
+    const size = 5 + Math.random() * 10;
+    bubble.style.width = size + 'px';
+    bubble.style.height = size + 'px';
+    const startX = btnRect.left + btnRect.width * Math.random();
+    const startY = btnRect.top + btnRect.height * Math.random();
+    bubble.style.left = startX + 'px';
+    bubble.style.top = startY + 'px';
+    bubble.style.background = colors[Math.floor(Math.random() * colors.length)];
+    document.body.appendChild(bubble);
+
+    const angle = Math.random() * Math.PI * 2;
+    const distance = 40 + Math.random() * 80;
+    const endX = startX + Math.cos(angle) * distance;
+    const endY = startY + Math.sin(angle) * distance;
+    const duration = 500 + Math.random() * 400;
+
+    bubble.animate([
+      { transform: `translate(0, 0) scale(1)`, opacity: 1 },
+      { transform: `translate(${Math.cos(angle) * distance * 0.7}px, ${Math.sin(angle) * distance * 0.7}px) scale(1.2)`, opacity: 0.8, offset: 0.6 },
+      { transform: `translate(${endX - startX}px, ${endY - startY}px) scale(0)`, opacity: 0 }
+    ], { duration: duration, easing: 'cubic-bezier(0.175, 0.885, 0.32, 1.275)' });
+    setTimeout(() => bubble.remove(), duration);
+  }
+}
+
+function triggerLiquidSearchAnimation(btnSearch) {
+  return new Promise(resolve => {
+    if (btnSearch.classList.contains('animating')) return resolve();
+
+    const mockFab = document.getElementById('fab-recalc');
+    const gooeyContainer = document.getElementById('gooey-container');
+    if (!mockFab || !gooeyContainer) return resolve();
+
+    const btnRect = btnSearch.getBoundingClientRect();
+    const fabRect = mockFab.getBoundingClientRect();
+
+    createBubbleEffect(btnRect);
+
+    const btnText = btnSearch.querySelector('.btn-text');
+    if (btnText) btnText.style.opacity = '0';
+    btnSearch.style.background = 'transparent';
+    btnSearch.style.boxShadow = 'none';
+    btnSearch.classList.add('animating');
+    gooeyContainer.innerHTML = '';
+
+    const fabGooeyTarget = document.createElement('div');
+    fabGooeyTarget.style.position = 'fixed';
+    fabGooeyTarget.style.left = fabRect.left + 'px';
+    fabGooeyTarget.style.top = fabRect.top + 'px';
+    fabGooeyTarget.style.width = fabRect.width + 'px';
+    fabGooeyTarget.style.height = fabRect.height + 'px';
+    fabGooeyTarget.style.borderRadius = '50%';
+    fabGooeyTarget.style.background = 'var(--gradient-gold)';
+    fabGooeyTarget.style.zIndex = '1';
+    gooeyContainer.appendChild(fabGooeyTarget);
+
+    const liquidBlob = document.createElement('div');
+    liquidBlob.className = 'liquid-blob';
+    liquidBlob.style.width = btnRect.width + 'px';
+    liquidBlob.style.height = btnRect.height + 'px';
+    liquidBlob.style.left = btnRect.left + 'px';
+    liquidBlob.style.top = btnRect.top + 'px';
+    liquidBlob.style.borderRadius = '12px';
+    liquidBlob.style.opacity = '1';
+    gooeyContainer.appendChild(liquidBlob);
+
+    const dropCount = 3;
+    const drops = [];
+    for (let i = 0; i < dropCount; i++) {
+      const drop = document.createElement('div');
+      drop.className = 'liquid-drop';
+      drop.style.width = '30px';
+      drop.style.height = '30px';
+      drop.style.left = (btnRect.left + btnRect.width / 2 - 15) + 'px';
+      drop.style.top = (btnRect.top + btnRect.height / 2 - 15) + 'px';
+      drop.style.opacity = '1';
+      gooeyContainer.appendChild(drop);
+      drops.push(drop);
+    }
+
+    const startX = btnRect.left + btnRect.width / 2;
+    const startY = btnRect.top + btnRect.height / 2;
+    const startW = btnRect.width;
+    const startH = btnRect.height;
+    const endX = fabRect.left + fabRect.width / 2;
+    const endY = fabRect.top + fabRect.height / 2;
+    const angle = Math.atan2(endY - startY, endX - startX);
+
+    let startTime = null;
+    const duration = 750;
+    const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const easeInExpo = (t) => t === 0 ? 0 : Math.pow(2, 10 * t - 10);
+
+    function animateLiquid(timestamp) {
+      if (!startTime) startTime = timestamp;
+      let progress = (timestamp - startTime) / duration;
+      if (progress > 1) progress = 1;
+
+      let currentX = startX, currentY = startY, currentW = startW, currentH = startH;
+      let scaleX = 1, scaleY = 1, br = 12;
+
+      if (progress < 0.3) {
+        const p = progress / 0.3;
+        const ease = easeInOutCubic(p);
+        br = 12 + ease * (startH / 2 - 12);
+        currentW = startW * (1 - ease * 0.4);
+        currentH = startH * (1 + ease * 0.2);
+      } else {
+        const p = (progress - 0.3) / 0.7;
+        const ease = easeInExpo(p);
+        currentX = startX + (endX - startX) * ease;
+        currentY = startY + (endY - startY) * ease;
+        br = startH / 2;
+        currentW = startW * 0.6 * (1 - ease) + (fabRect.width * ease);
+        currentH = startH * 1.2 * (1 - ease) + (fabRect.height * ease);
+        const stretch = 1 + Math.sin(p * Math.PI) * 1.5;
+        scaleX = stretch;
+        scaleY = 1 / Math.sqrt(stretch);
+      }
+
+      liquidBlob.style.borderRadius = `${br}px`;
+      liquidBlob.style.width = currentW + 'px';
+      liquidBlob.style.height = currentH + 'px';
+      liquidBlob.style.left = (currentX - currentW / 2) + 'px';
+      liquidBlob.style.top = (currentY - currentH / 2) + 'px';
+
+      if (progress >= 0.3) {
+        liquidBlob.style.transform = `rotate(${angle}rad) scale(${scaleX}, ${scaleY})`;
+      } else {
+        liquidBlob.style.transform = `translate(0,0)`;
+      }
+
+      drops.forEach((drop, idx) => {
+        const delay = 0.3 + (idx + 1) * 0.08;
+        let dp = (progress - delay) / (1 - delay);
+        if (dp < 0) dp = 0;
+        if (dp > 1) dp = 1;
+        const dease = easeInExpo(dp);
+        const dx = startX + (endX - startX) * dease;
+        const dy = startY + (endY - startY) * dease;
+        const ds = 1 - Math.pow(dp, 2);
+        drop.style.left = (dx - 15) + 'px';
+        drop.style.top = (dy - 15) + 'px';
+        drop.style.transform = `scale(${ds})`;
+      });
+
+      if (progress < 1) {
+        requestAnimationFrame(animateLiquid);
+      } else {
+        liquidBlob.style.opacity = '0';
+        drops.forEach(d => d.style.opacity = '0');
+        setTimeout(() => {
+          gooeyContainer.innerHTML = '';
+          setTimeout(() => {
+            btnSearch.style.display = '';
+            btnSearch.classList.remove('animating');
+            btnSearch.style.background = '';
+            btnSearch.style.boxShadow = '';
+            if (btnText) btnText.style.opacity = '1';
+          }, 600);
+          resolve();
+        }, 50);
+      }
+    }
+    requestAnimationFrame(animateLiquid);
+  });
+}
+
+async function runOptimization(e) {
   const btnOptimize = document.getElementById('btn-optimize');
-  if (btnOptimize) triggerPopEffect(btnOptimize);
+  const fabRecalcEl = document.getElementById('fab-recalc');
+
+  // アニメーションの対象となるため先にFAB枠を表示しておく
+  if (fabRecalcEl) {
+    fabRecalcEl.style.display = 'block';
+    void fabRecalcEl.offsetWidth; // 強制リフロー
+  }
+
+  if (btnOptimize && e && e.type === 'click') {
+    await triggerLiquidSearchAnimation(btnOptimize);
+  } else if (btnOptimize) {
+    triggerPopEffect(btnOptimize);
+  }
 
   const btn = document.getElementById('recalc-btn-el');
   const label = document.getElementById('recalc-label');
   const iconDefault = document.getElementById('recalc-icon-default');
   const iconLoading = document.getElementById('recalc-icon-loading');
   const iconStop = document.getElementById('recalc-icon-stop');
-
-  // FABを検索開始と同時に表示
-  const fabRecalcEl = document.getElementById('fab-recalc');
-  if (fabRecalcEl) fabRecalcEl.style.display = 'block';
 
   // アニメーション: 縮小 (丸いアイコン化)
   if (btn) {
@@ -1429,7 +1738,8 @@ async function optimize() {
       if (delayAsSB) pinnedSB += getDelayTurns(monster);
     }
     // 固定アシストの覚醒を集計（充足度判定用）
-    getActiveAwakens(monster).forEach(id => {
+    // 消滅アシストの場合は付与覚醒を使用
+    getEffectiveAwakensForSearch(monster).forEach(id => {
       pinnedAwakens[id] = (pinnedAwakens[id] || 0) + 1;
     });
   }
@@ -1479,8 +1789,8 @@ async function optimize() {
       }
 
       const hpSorted = [...raw].sort((a, b) => {
-        const hpa = getActiveAwakens(a).filter(aw => aw === 46).length;
-        const hpb = getActiveAwakens(b).filter(aw => aw === 46).length;
+        const hpa = getEffectiveAwakensForSearch(a).filter(aw => aw === 46).length;
+        const hpb = getEffectiveAwakensForSearch(b).filter(aw => aw === 46).length;
         return hpb - hpa || b._score - a._score;
       });
       hpSorted.slice(0, 5).forEach(m => selectedMap.set(m.no, m));
@@ -1492,10 +1802,10 @@ async function optimize() {
         const target = partyRequiredAwakens[aid];
         if (fulfilled >= target) continue; // 既に固定アシストで充足済み → スキップ
         const specialists = raw
-          .filter(m => getActiveAwakens(m).includes(aid))
+          .filter(m => getEffectiveAwakensForSearch(m).includes(aid))
           .sort((a, b) => {
-            const ca = getActiveAwakens(a).filter(aw => aw === aid).length;
-            const cb = getActiveAwakens(b).filter(aw => aw === aid).length;
+            const ca = getEffectiveAwakensForSearch(a).filter(aw => aw === aid).length;
+            const cb = getEffectiveAwakensForSearch(b).filter(aw => aw === aid).length;
             return cb - ca || b._score - a._score;
           })
           .slice(0, 2);
@@ -1530,7 +1840,7 @@ function calculateAwakenScarcity() {
   const totalPool = assistMonsters.length;
   for (const id of Object.keys(partyRequiredAwakens)) {
     const aid = parseInt(id);
-    const count = assistMonsters.filter(m => getActiveAwakens(m).includes(aid)).length;
+    const count = assistMonsters.filter(m => getEffectiveAwakensForSearch(m).includes(aid)).length;
     // 少ないほど1に近い重み (0.1 ~ 1.0)
     scarcity[aid] = Math.max(0.1, 1 - (count / totalPool));
   }
@@ -1556,7 +1866,7 @@ const CAPPED_AWAKEN_IDS = new Set([
  */
 function scoreMonsterWithScarcity(monster, slotIdx, scarcityMap, fulfilledAwakens, remainingSBNeeded) {
   let score = 0;
-  const active = getActiveAwakens(monster);
+  const active = getEffectiveAwakensForSearch(monster);
   const cond = slotConditions[slotIdx];
   const base = baseMonsters[slotIdx];
 
@@ -1638,7 +1948,7 @@ async function runDFS(slotCandidates, searchOrder, initialAwakens, initialSB, to
     slotCandidates[slotIdx].forEach(m => {
       const sb = getMonsterSB(m) + (slotConditions[slotIdx].skillUsable ? getHasteTurns(m) + (delayAsSB ? getDelayTurns(m) : 0) : 0);
       if (sb > maxSlotSB) maxSlotSB = sb;
-      const act = getActiveAwakens(m);
+      const act = getEffectiveAwakensForSearch(m);
       const counts = {};
       act.forEach(a => counts[a] = (counts[a] || 0) + 1);
       for (const [aid, c] of Object.entries(counts)) {
@@ -1716,10 +2026,20 @@ async function runDFS(slotCandidates, searchOrder, initialAwakens, initialSB, to
     if (!canPotentiallyMeetRequirements(depth, currentAwakens, currentSB, maxRemains)) return;
 
     const slotIdx = searchOrder[depth];
-    const usedNos = new Set(currentPicks.map(p => p.monster.no));
+    // 同種採用の制御: 使用回数をカウントして制限チェック
+    const usedCounts = {};
+    currentPicks.forEach(p => { usedCounts[p.monster.no] = (usedCounts[p.monster.no] || 0) + 1; });
     for (const m of slotCandidates[slotIdx]) {
       if (stopRequested) return;
-      if (usedNos.has(m.no)) continue;
+      const currentCount = usedCounts[m.no] || 0;
+      if (!allowDuplicateAssists) {
+        // OFF時：同種は1体まで（従来通り）
+        if (currentCount >= 1) continue;
+      } else {
+        // ON時：個別制限 > グローバル制限の順で判定
+        const limit = monsterDupLimits[m.no] !== undefined ? monsterDupLimits[m.no] : duplicateMaxCount;
+        if (currentCount >= limit) continue;
+      }
 
       // 深さ浅い部分で定期的にUIに制御を返す
       if (depth <= 1) {
@@ -1736,7 +2056,7 @@ async function runDFS(slotCandidates, searchOrder, initialAwakens, initialSB, to
 
       const nextAwakens = { ...currentAwakens };
       const nextAssistAwakens = { ...currentAssistAwakens };
-      const active = getActiveAwakens(m);
+      const active = getEffectiveAwakensForSearch(m);
       let monsterScore = 0;
 
       const awakenCounts = {};
@@ -1847,7 +2167,7 @@ function filterCandidatesForSlot(slotIdx) {
 
   return assistMonsters.filter(m => {
     if (excludedMonsterNos.has(m.no)) return false;
-    const active = getActiveAwakens(m);
+    const active = getEffectiveAwakensForSearch(m);
 
     // 必須覚醒チェック（上位互換マッチング対応）
     if (cond.requiredAwakens.length > 0) {
@@ -1880,6 +2200,7 @@ function filterCandidatesForSlot(slotIdx) {
 
     // 強制火力設定時: 選択中の火力覚醒を少なくとも1つ持っていること
     if (cond.forcedDps && selectedDpsAwakens.size > 0) {
+      // 消滅アシストの場合は付与覚醒で火力判定（activeは既にgetEffectiveAwakensForSearchで取得済み）
       if (!active.some(a => selectedDpsAwakens.has(a))) return false;
     }
 
@@ -1919,7 +2240,7 @@ function filterCandidatesForSlot(slotIdx) {
 
 function scoreMonster(monster, slotIdx) {
   let score = 0;
-  const active = getActiveAwakens(monster);
+  const active = getEffectiveAwakensForSearch(monster);
   const cond = slotConditions[slotIdx];
   const base = baseMonsters[slotIdx];
 
@@ -2022,6 +2343,10 @@ function buildResultCard(result, idx, isRealtime) {
   `;
 
   html += '<div class="result-assist-list">';
+  // パターン内の同種カウントを算出
+  const dupCounts = {};
+  result.picks.forEach(p => { dupCounts[p.no] = (dupCounts[p.no] || 0) + 1; });
+  const dupSeen = {}; // 同種の出現順を追跡
   for (let i = 0; i < 6; i++) {
     const m = result.picks[i];
     const allAw = getAllAwakens(m);
@@ -2033,13 +2358,39 @@ function buildResultCard(result, idx, isRealtime) {
     const needsDpsWarning = slotConditions[i].dpsPriority && !hasDps;
 
     const isPinned = pinnedAssists[i] && pinnedAssists[i].no === m.no;
+    // 同種採用判定: パターン内で同一モンスターが複数スロットに存在するか
+    const isDuplicate = dupCounts[m.no] > 1;
     // 他の全スロットのいずれかで固定されているモンスターかどうかも判定（同期表示用）
-    const isMonsterPinnedAnywhere = Object.values(pinnedAssists).some(p => p.no === m.no);
+    // ただし同種採用時（isDuplicate）はスロット単位で独立判定
+    const isMonsterPinnedAnywhere = !isDuplicate && Object.values(pinnedAssists).some(p => p.no === m.no);
     const isExcluded = excludedMonsterNos.has(m.no);
 
+    // 同種採用: この出現が何体目かを追跡
+    dupSeen[m.no] = (dupSeen[m.no] || 0) + 1;
+    // 採用数制限済みの判定: 許容数を超えた分のみ制限表示
+    const dupLimit = monsterDupLimits[m.no];
+    const isDupLimited = allowDuplicateAssists && dupLimit !== undefined && dupSeen[m.no] > dupLimit;
+
+    let awakensHtml = '';
+    if (isVanishingAssist(m) && getVanishGrantedAwakens(m)) {
+      const granted = getVanishGrantedAwakens(m);
+      awakensHtml = `
+        <div class="vanish-original">
+          ${allAw.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+        </div>
+        <span class="vanish-plus">＋</span>
+        <div class="vanish-granted">
+          ${granted.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+        </div>
+      `;
+    } else {
+      awakensHtml = allAw.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('');
+    }
+
     html += `
-      <div class="result-assist-card ${needsDpsWarning ? 'dps-warning' : ''} ${isExcluded ? 'excluded-state' : ''}" data-monster-no="${m.no}">
+      <div class="result-assist-card ${needsDpsWarning ? 'dps-warning' : ''} ${isExcluded ? 'excluded-state' : ''} ${isDupLimited ? 'dup-limited-state' : ''}" data-monster-no="${m.no}" data-slot-idx="${i}">
         ${isExcluded ? `<button class="btn-restore-exclusion" data-no="${m.no}">除外解除</button>` : ''}
+        ${isDupLimited ? '<div class="dup-limited-overlay">採用数制限済み</div>' : ''}
         <div class="assist-card-header">
           <span class="assist-slot-label">スロット${i + 1}${baseMon ? ` (${baseMon.name})` : ''}</span>
           <div class="assist-card-actions">
@@ -2049,6 +2400,7 @@ function buildResultCard(result, idx, isRealtime) {
             <button class="btn-exclude" data-no="${m.no}">❌ 除外</button>
           </div>
         </div>
+        ${isDuplicate ? `<span class="dup-badge">🔁 複数採用（${dupCounts[m.no]}体）</span>` : ''}
         ${needsDpsWarning ? `
           <div class="dps-warning-banner">
             <span class="warn-icon">⚠️</span> 火力覚醒が盛れませんでした
@@ -2064,7 +2416,7 @@ function buildResultCard(result, idx, isRealtime) {
           ${types.map(t => `<img src="${typeIcon(t)}" title="${typeName(t)}">`).join('')}
         </div>
         <div class="assist-awakens">
-          ${allAw.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+          ${awakensHtml}
         </div>
         <div class="assist-skill">
           <div class="skill-name-line">${skill ? skill.name : '不明'}<span class="skill-turn">${skill ? ` (CT: ${skill.baseTurn}→${skill.minTurn})` : ''}</span></div>
@@ -2206,33 +2558,18 @@ function displayResults(results) {
 function bindResultEvents(container, results) {
   // 除外ボタンイベント
   container.querySelectorAll('.btn-exclude').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async (e) => {
       const monsterNo = parseInt(btn.dataset.no);
 
-      // 連動エフェクト
-      const allSimilarCards = document.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"]`);
-      allSimilarCards.forEach(c => c.classList.add('exclusion-effect'));
+      // 同種アシストON時: ポップアップで選択
+      if (allowDuplicateAssists) {
+        e.stopPropagation();
+        showExcludeActionPopup(btn, monsterNo);
+        return;
+      }
 
-      // アニメーション後にグレーアウト状態へ移行
-      await new Promise(r => setTimeout(r, 400));
-      excludedMonsterNos.add(monsterNo);
-
-      allSimilarCards.forEach(c => {
-        c.classList.remove('exclusion-effect');
-        c.classList.add('excluded-state');
-        // 解除ボタンを動的に追加
-        if (!c.querySelector('.btn-restore-exclusion')) {
-          const restoreBtn = document.createElement('button');
-          restoreBtn.className = 'btn-restore-exclusion';
-          restoreBtn.dataset.no = monsterNo;
-          restoreBtn.textContent = '除外解除';
-          restoreBtn.addEventListener('click', () => restoreExclusion(monsterNo));
-          c.prepend(restoreBtn);
-        }
-      });
-
-      updateExclusionUI();
-      // runOptimization(); // フィードバックに基づき自動計算を停止
+      // OFF時: 従来通り即除外
+      await performFullExclusion(monsterNo);
     });
   });
 
@@ -2268,6 +2605,7 @@ function bindResultEvents(container, results) {
       }
 
       // 表示中の全パターンの同一モンスターのバッジを同期更新
+      // 同種採用時（同一パターン内で同じnoが複数スロットにいる場合）はスロット単位で独立制御
       const allSameMonsters = document.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"] .btn-pin`);
       const isCurrentMonsterPinnedAnywhere = Object.values(pinnedAssists).some(p => p.no === monsterNo);
 
@@ -2275,12 +2613,29 @@ function bindResultEvents(container, results) {
         const sIdx = parseInt(pinBtn.dataset.slot);
         const isActuallyPinnedInThisSlot = pinnedAssists[sIdx] && pinnedAssists[sIdx].no === monsterNo;
 
-        if (isActuallyPinnedInThisSlot || (isCurrentMonsterPinnedAnywhere && !pinnedAssists[sIdx])) {
-          pinBtn.classList.add('pinned');
-          pinBtn.textContent = '📍固定中';
+        // 同種複数採用の判定: このボタンの親パターン内で同じnoが複数あるか
+        const parentPattern = pinBtn.closest('.result-pattern');
+        const sameNoInPattern = parentPattern ? parentPattern.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"]`).length : 0;
+        const isDupInPattern = sameNoInPattern > 1;
+
+        if (isDupInPattern) {
+          // 同種複数採用パターン: そのスロットの実際の固定状態のみを反映
+          if (isActuallyPinnedInThisSlot) {
+            pinBtn.classList.add('pinned');
+            pinBtn.textContent = '📍固定中';
+          } else {
+            pinBtn.classList.remove('pinned');
+            pinBtn.textContent = '📌';
+          }
         } else {
-          pinBtn.classList.remove('pinned');
-          pinBtn.textContent = '📌';
+          // 通常（同種なし）: 従来通り他スロットにも連動
+          if (isActuallyPinnedInThisSlot || (isCurrentMonsterPinnedAnywhere && !pinnedAssists[sIdx])) {
+            pinBtn.classList.add('pinned');
+            pinBtn.textContent = '📍固定中';
+          } else {
+            pinBtn.classList.remove('pinned');
+            pinBtn.textContent = '📌';
+          }
         }
       });
 
@@ -2451,7 +2806,258 @@ function clearAllExclusions() {
   runOptimization();
 }
 
-// ==================== 固定機能 ====================
+// ==================== 同種アシスト / 除外ポップアップ ====================
+
+// 従来の除外処理を関数化
+async function performFullExclusion(monsterNo) {
+  const allSimilarCards = document.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"]`);
+  allSimilarCards.forEach(c => c.classList.add('exclusion-effect'));
+
+  await new Promise(r => setTimeout(r, 400));
+  excludedMonsterNos.add(monsterNo);
+  // 個別制限があれば削除（除外が優先）
+  delete monsterDupLimits[monsterNo];
+
+  allSimilarCards.forEach(c => {
+    c.classList.remove('exclusion-effect');
+    c.classList.add('excluded-state');
+    if (!c.querySelector('.btn-restore-exclusion')) {
+      const restoreBtn = document.createElement('button');
+      restoreBtn.className = 'btn-restore-exclusion';
+      restoreBtn.dataset.no = monsterNo;
+      restoreBtn.textContent = '除外解除';
+      restoreBtn.addEventListener('click', () => restoreExclusion(monsterNo));
+      c.prepend(restoreBtn);
+    }
+  });
+
+  updateExclusionUI();
+  updateDupLimitUI();
+}
+
+// 除外アクション選択ポップアップ（同種アシストON時）
+let activeExcludePopup = null;
+function showExcludeActionPopup(anchorBtn, monsterNo) {
+  hideExcludeActionPopup(); // 既存を閉じる
+
+  const monster = allMonsters.find(m => m.no === monsterNo);
+  const monsterName = monster ? monster.name : `No.${monsterNo}`;
+
+  const popup = document.createElement('div');
+  popup.className = 'exclude-action-popup show';
+  popup.innerHTML = `
+    <div class="popup-title" style="color:var(--accent-red)">
+      <svg class="popup-title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      ${monsterName}
+    </div>
+
+    <div class="exclude-action-btn change-limit" data-no="${monsterNo}">
+      <div class="mode-icon-wrap" style="background:linear-gradient(135deg, #3b82f6, #6366f1); box-shadow:0 2px 12px rgba(59,130,246,0.4);">
+        <svg class="mode-icon-svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20h9"/>
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+        </svg>
+      </div>
+      <div class="mode-text">
+        <div class="mode-label">🔢 複数採用数の変更</div>
+        <div class="mode-desc">このモンスターの最大採用数を変更</div>
+      </div>
+      <svg class="mode-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6" />
+      </svg>
+    </div>
+
+    <div class="exclude-action-btn full-exclude" data-no="${monsterNo}">
+      <div class="mode-icon-wrap" style="background:linear-gradient(135deg, #ef4444, #dc2626); box-shadow:0 2px 12px rgba(239,68,68,0.4);">
+        <svg class="mode-icon-svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+        </svg>
+      </div>
+      <div class="mode-text">
+        <div class="mode-label">🚫 完全除外</div>
+        <div class="mode-desc">候補から完全に除外する</div>
+      </div>
+      <svg class="mode-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6" />
+      </svg>
+    </div>
+  `;
+
+  // ポップアップイベント
+  popup.querySelector('.change-limit').addEventListener('click', (e) => {
+    e.stopPropagation();
+    showDupLimitSelector(popup, monsterNo, monsterName);
+  });
+
+  popup.querySelector('.full-exclude').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    hideExcludeActionPopup();
+    await performFullExclusion(monsterNo);
+  });
+
+  // アンカーの親カードに配置
+  const card = anchorBtn.closest('.result-assist-card');
+  if (card) {
+    card.style.position = 'relative';
+    card.appendChild(popup);
+  }
+
+  activeExcludePopup = popup;
+
+  // 外部クリックで閉じる
+  setTimeout(() => {
+    document.addEventListener('click', handleExcludePopupOutsideClick);
+  }, 10);
+}
+
+function handleExcludePopupOutsideClick(e) {
+  if (activeExcludePopup && !activeExcludePopup.contains(e.target)) {
+    hideExcludeActionPopup();
+  }
+}
+
+function hideExcludeActionPopup() {
+  if (activeExcludePopup) {
+    activeExcludePopup.remove();
+    activeExcludePopup = null;
+  }
+  document.removeEventListener('click', handleExcludePopupOutsideClick);
+}
+
+// 採用数選択UI（ポップアップ内に展開）
+function showDupLimitSelector(popup, monsterNo, monsterName) {
+  // ボタンを選択UIに置換
+  const currentLimit = monsterDupLimits[monsterNo] !== undefined ? monsterDupLimits[monsterNo] : duplicateMaxCount;
+  popup.innerHTML = `
+    <div class="popup-title" style="color:var(--accent-blue)">
+      <svg class="popup-title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      ${monsterName}の最大採用数
+    </div>
+    <div class="dup-limit-selector">
+      ${[1, 2, 3, 4, 5, 6].map(n => `
+        <button class="dup-limit-option ${n === currentLimit ? 'active' : ''}" data-count="${n}">
+          ${n}体
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  popup.querySelectorAll('.dup-limit-option').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const count = parseInt(opt.dataset.count);
+      applyDupLimit(monsterNo, count);
+      hideExcludeActionPopup();
+    });
+  });
+}
+
+// 採用数制限を適用し、UIをリアルタイム反映
+function applyDupLimit(monsterNo, maxCount) {
+  monsterDupLimits[monsterNo] = maxCount;
+  updateDupLimitUI();
+
+  // 全パターンを走査して、制限超過分にグレーアウトを適用
+  const allCards = document.querySelectorAll('.result-pattern');
+  allCards.forEach(pattern => {
+    const monCards = pattern.querySelectorAll(`.result-assist-card[data-monster-no="${monsterNo}"]`);
+    let seen = 0;
+    monCards.forEach(c => {
+      seen++;
+      if (seen > maxCount) {
+        c.classList.add('dup-limited-state');
+        if (!c.querySelector('.dup-limited-overlay')) {
+          const overlay = document.createElement('div');
+          overlay.className = 'dup-limited-overlay';
+          overlay.textContent = '採用数制限済み';
+          c.prepend(overlay);
+        }
+      } else {
+        c.classList.remove('dup-limited-state');
+        const existing = c.querySelector('.dup-limited-overlay');
+        if (existing) existing.remove();
+      }
+    });
+  });
+}
+
+// STEP3: 同種アシスト設定トグル
+function toggleDuplicateAssists(checked) {
+  allowDuplicateAssists = checked;
+  const section = document.getElementById('duplicate-count-section');
+  if (section) section.style.display = checked ? 'block' : 'none';
+}
+
+function updateDuplicateMaxCount(val) {
+  const v = parseInt(val);
+  if (v >= 2 && v <= 6) duplicateMaxCount = v;
+}
+
+// 採用数制限管理UI
+function updateDupLimitUI() {
+  const section = document.getElementById('dup-limit-manager-section');
+  const container = document.getElementById('dup-limit-list-container');
+  if (!section || !container) return;
+
+  const entries = Object.entries(monsterDupLimits);
+  if (entries.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'block';
+  container.innerHTML = '';
+
+  entries.forEach(([noStr, limit]) => {
+    const no = parseInt(noStr);
+    const m = allMonsters.find(mon => mon.no === no);
+    if (!m) return;
+    const div = document.createElement('div');
+    div.className = 'exclusion-item';
+    div.innerHTML = `
+      <span class="ex-no">No.${m.no}</span>
+      <span class="ex-name">${m.name}</span>
+      <span class="dup-limit-count">${limit}体まで</span>
+      <button class="btn-restore" data-no="${m.no}">↩️ 解除</button>
+    `;
+    div.querySelector('.btn-restore').addEventListener('click', () => {
+      delete monsterDupLimits[no];
+      updateDupLimitUI();
+      // 制限解除をUI反映
+      const allCards = document.querySelectorAll(`.result-assist-card[data-monster-no="${no}"]`);
+      allCards.forEach(c => {
+        c.classList.remove('dup-limited-state');
+        const overlay = c.querySelector('.dup-limited-overlay');
+        if (overlay) overlay.remove();
+      });
+    });
+    container.appendChild(div);
+  });
+}
+
+function clearAllDupLimits() {
+  const nos = Object.keys(monsterDupLimits);
+  monsterDupLimits = {};
+  updateDupLimitUI();
+  // 全カードの制限状態を解除
+  nos.forEach(noStr => {
+    const allCards = document.querySelectorAll(`.result-assist-card[data-monster-no="${noStr}"]`);
+    allCards.forEach(c => {
+      c.classList.remove('dup-limited-state');
+      const overlay = c.querySelector('.dup-limited-overlay');
+      if (overlay) overlay.remove();
+    });
+  });
+}
+
 
 function updatePinnedUI() {
   const section = document.getElementById('pinned-section');
@@ -2613,7 +3219,7 @@ function getCurrentBaseline() {
   for (let i = 0; i < 6; i++) {
     const m = pinnedAssists[i];
     if (!m) continue;
-    const active = getActiveAwakens(m);
+    const active = getEffectiveAwakensForSearch(m);
     active.forEach(a => { awakenCounts[a] = (awakenCounts[a] || 0) + 1; });
     totalSB += getMonsterSB(m);
     if (slotConditions[i].skillUsable) {

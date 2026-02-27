@@ -184,9 +184,30 @@
           </label>
         </div>
       </div>
+      <div class="section-card">
+        <div class="section-title"><span class="emoji">👥</span> 同種アシスト設定</div>
+        <p class="section-desc">同じアシストモンスターを複数スロットで採用することを許可します。</p>
+        <div class="toggle-row">
+          <span class="toggle-label">同種アシストの採用を許可</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="allow-duplicate-assists" onchange="toggleDuplicateAssists(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div id="duplicate-count-section" style="display:none; margin-top:10px;">
+          <div class="num-input-group">
+            <label>最大採用数：</label>
+            <input type="number" class="num-input" id="duplicate-max-count" min="2" max="6" value="2"
+              onchange="updateDuplicateMaxCount(this.value)">
+            <span style="font-size:0.82rem;color:var(--text-muted)">体まで</span>
+          </div>
+          <p class="hint-text">※ 採用数は計算結果画面でモンスター個別に変更できます</p>
+        </div>
+      </div>
       <div class="step-nav">
         <button class="btn btn-outline" onclick="goToStep(2)">◀ 戻る</button>
-        <button class="btn btn-gold btn-lg" id="btn-optimize" onclick="runOptimization()">🔍 この条件で検索</button>
+        <button class="btn btn-gold btn-lg btn-search" id="btn-optimize" onclick="runOptimization(event)"><span
+            class="btn-text">🔍 この条件で検索</span></button>
       </div>
     </div>
 
@@ -289,6 +310,15 @@
         <div class="exclusion-list" id="exclusion-list-container"></div>
         <div style="margin-top:12px; text-align:right">
           <button class="btn btn-outline btn-sm" onclick="clearAllExclusions()">全ての除外を解除</button>
+        </div>
+      </div>
+
+      <!-- 採用数制限管理 -->
+      <div class="section-card" id="dup-limit-manager-section" style="display:none">
+        <div class="section-title"><span class="emoji">🔢</span> 採用数制限済みモンスターの管理</div>
+        <div class="exclusion-list" id="dup-limit-list-container"></div>
+        <div style="margin-top:12px; text-align:right">
+          <button class="btn btn-outline btn-sm" onclick="clearAllDupLimits()">全ての制限を解除</button>
         </div>
       </div>
 
@@ -435,8 +465,22 @@
   </div>
 
   <footer style="text-align:right;padding:8px 16px;font-size:0.7rem;color:#666;opacity:0.6;">
-    v1.0.3 / 最終修正: 2026-02-27
+    v1.0.4 / 最終修正: 2026-02-27
   </footer>
+
+  <!-- SVGフィルター定義（Gooeyエフェクト。コントラストを強めにして粘り気を強調） -->
+  <svg width="0" height="0" style="position:absolute;">
+    <defs>
+      <filter id="gooey-filter" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="15" result="blur" />
+        <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 35 -15" result="gooey" />
+        <feComposite in="SourceGraphic" in2="gooey" operator="atop" />
+      </filter>
+    </defs>
+  </svg>
+
+  <!-- Gooey効果を適用するコンテナ（検索ボタン液体化アニメーション用） -->
+  <div class="gooey-container" id="gooey-container"></div>
 
   <script src="app.js"></script>
 </body>
