@@ -9,6 +9,7 @@ let skillMap = {};
 let awakenNames = {};
 let attrNames = {};
 let typeNames = {};
+let awakenMultipliers = {}; // 覚醒ID → 火力倍率（CSVから読み込み）
 
 // ==================== UI状態 ====================
 let currentStep = 0;
@@ -22,7 +23,10 @@ const slotConditions = Array.from({ length: 6 }, () => ({
   skillUsable: true,
   resonance: false,
   dpsPriority: false,
-  skillKeyword: "", // 追加
+  skillKeyword: "",
+  minTurn: null,              // スキルマターンn以下（skill.minTurn <= n）
+  maxTurn: null,              // スキル初期ターンn以上（skill.baseTurn >= n）
+  requiredDpsMultiplier: null, // 火力倍率下限
 }));
 
 // STEP2: 有効な火力覚醒
@@ -46,6 +50,10 @@ let pinnedAssists = {};
 // ブックマーク候補
 let bookmarkedResults = [];
 let bookmarkFabTimer = null;
+
+// 検索モード（true: 高速=スコアリング絞り込み, false: 総当たり=全数探索）
+let searchModeFast = true;
+let searchModePopupActive = false;
 
 // ==================== 火力覚醒ペアリング ====================
 // ベース覚醒 → ＋覚醒 のマッピング
@@ -100,10 +108,102 @@ const DPS_BASE_IDS = [
 ];
 
 // 表示除外する覚醒ID
-const HIDDEN_AWAKEN_IDS = new Set([0, 49, 142]);
+const HIDDEN_AWAKEN_IDS = new Set([0, 49]);
 const DASH_NAMES = new Set(['-', 'null', '']);
 // STEP3覚醒グリッドから除外するID（SB系は下部の数値入力で管理）
 const PARTY_HIDDEN_AWAKEN_IDS = new Set([21, 56, 105]);
+
+// ==================== 覚醒上位互換マッピング ====================
+// 下位覚醒ID → { upId: 上位覚醒ID, ratio: 上位1個=下位N個 }
+const UPGRADE_AWAKEN_MAP = {
+  27: { upId: 96, ratio: 2 },    // 2体攻撃 → 2体攻撃+
+  43: { upId: 107, ratio: 2 },   // 7強 → 7強+
+  61: { upId: 111, ratio: 2 },   // 10強 → 10強+
+  22: { upId: 116, ratio: 3 },   // 火列 → 火列x3
+  23: { upId: 117, ratio: 3 },   // 水列 → 水列x3
+  24: { upId: 118, ratio: 3 },   // 木列 → 木列x3
+  25: { upId: 119, ratio: 3 },   // 光列 → 光列x3
+  26: { upId: 120, ratio: 3 },   // 闇列 → 闇列x3
+  73: { upId: 121, ratio: 2 },   // 火コンボ → 火コンボ+
+  74: { upId: 122, ratio: 2 },   // 水コンボ → 水コンボ+
+  75: { upId: 123, ratio: 2 },   // 木コンボ → 木コンボ+
+  76: { upId: 124, ratio: 2 },   // 光コンボ → 光コンボ+
+  77: { upId: 125, ratio: 2 },   // 闇コンボ → 闇コンボ+
+  78: { upId: 110, ratio: 2 },   // 十字 → 十字+
+  60: { upId: 108, ratio: 2 },   // L字 → L字+
+  48: { upId: 109, ratio: 2 },   // 無効貫通 → 無効貫通+
+  79: { upId: 112, ratio: 2 },   // 3色 → 3色+
+  80: { upId: 113, ratio: 2 },   // 4色 → 4色+
+  81: { upId: 114, ratio: 2 },   // 5色 → 5色+
+  20: { upId: 115, ratio: 2 },   // バインド回復 → バインド回復+
+  21: { upId: 56, ratio: 2 },    // スキルブースト → スキルブースト+
+  9: { upId: 98, ratio: 2 },    // 自動回復 → 自動回復+
+  51: { upId: 97, ratio: 2 },    // スキルチャージ → スキルチャージ+
+  11: { upId: 68, ratio: 5 },    // 暗闇耐性 → 暗闇耐性+
+  12: { upId: 69, ratio: 5 },    // お邪魔耐性 → お邪魔耐性+
+  13: { upId: 70, ratio: 5 },    // 毒耐性 → 毒耐性+
+  127: { upId: 142, ratio: 1.2 }, // 全パラ → 全パラ+
+  29: { upId: 104, ratio: 2 },   // 回復ドロ強 → 回復ドロ強+
+};
+
+// 逆引き: 上位覚醒ID → { downId: 下位覚醒ID, ratio: 上位1個=下位N個 }
+const DOWNGRADE_AWAKEN_MAP = {};
+for (const [downId, val] of Object.entries(UPGRADE_AWAKEN_MAP)) {
+  DOWNGRADE_AWAKEN_MAP[val.upId] = { downId: parseInt(downId), ratio: val.ratio };
+}
+
+/**
+ * 指定覚醒IDの「仮想的な保有数」を算出（上位覚醒による代替カウント含む）
+ * @param {number} awakenId - 判定対象の覚醒ID
+ * @param {Array|Object} awakens - 覚醒配列またはカウントオブジェクト {id: count}
+ * @returns {number} 仮想的な保有数
+ */
+function getVirtualCount(awakenId, awakens) {
+  let count;
+  // 配列かオブジェクトかで処理分岐
+  if (Array.isArray(awakens)) {
+    count = awakens.filter(a => a === awakenId).length;
+  } else {
+    count = awakens[awakenId] || 0;
+  }
+
+  // 下位覚醒を指定した場合: 上位覚醒の保有数をratio倍で加算
+  const upgrade = UPGRADE_AWAKEN_MAP[awakenId];
+  if (upgrade) {
+    const upCount = Array.isArray(awakens)
+      ? awakens.filter(a => a === upgrade.upId).length
+      : (awakens[upgrade.upId] || 0);
+    count += upCount * upgrade.ratio;
+  }
+
+  // 上位覚醒を指定した場合: 下位覚醒の保有数を1/ratio倍で加算
+  const downgrade = DOWNGRADE_AWAKEN_MAP[awakenId];
+  if (downgrade) {
+    const downCount = Array.isArray(awakens)
+      ? awakens.filter(a => a === downgrade.downId).length
+      : (awakens[downgrade.downId] || 0);
+    count += downCount / downgrade.ratio;
+  }
+
+  // 5色ドロップ強化の特殊処理
+  // 各属性ドロ強+(99-103)を要求した場合、5色ドロ強(137)は0.5個分
+  if ([99, 100, 101, 102, 103].includes(awakenId)) {
+    const fiveColorCount = Array.isArray(awakens)
+      ? awakens.filter(a => a === 137).length
+      : (awakens[137] || 0);
+    count += fiveColorCount * 0.5;
+  }
+
+  // 5色ドロ強(137)を要求した場合、属性ドロ強+全5種がそれぞれ1個以上あれば代替
+  if (awakenId === 137) {
+    const eleDropCounts = [99, 100, 101, 102, 103].map(id =>
+      Array.isArray(awakens) ? awakens.filter(a => a === id).length : (awakens[id] || 0)
+    );
+    count += Math.floor(Math.min(...eleDropCounts));
+  }
+
+  return count;
+}
 
 // ==================== データ読み込み ====================
 
@@ -214,10 +314,11 @@ function createBurstEffect(parent) {
 
 async function loadCSVMappings() {
   try {
-    const [awakRes, attrRes, typeRes] = await Promise.all([
+    const [awakRes, attrRes, typeRes, multRes] = await Promise.all([
       fetch('./awakens/awakens_name.csv'),
       fetch('./attributes/attributes_name.csv'),
       fetch('./type/type_name.csv'),
+      fetch('./awakens/覚醒スキル倍率表.csv'),
     ]);
     const awakText = await awakRes.text();
     awakText.trim().split('\n').forEach(line => {
@@ -233,6 +334,17 @@ async function loadCSVMappings() {
     typeText.trim().split('\n').forEach(line => {
       const parts = line.replace('\r', '').split(',');
       if (parts.length >= 2 && parts[0] !== 'no') typeNames[parseInt(parts[0])] = parts[1];
+    });
+    // 覚醒倍率テーブル読み込み（「特殊な倍率」列を使用）
+    const multText = await multRes.text();
+    multText.trim().split('\n').forEach(line => {
+      const parts = line.replace('\r', '').split(',');
+      // CSV: スキルNo, 汎用倍率, 覚醒種類, 特殊な倍率
+      if (parts.length >= 4 && parts[0] !== 'スキルNo') {
+        const id = parseInt(parts[0]);
+        const mult = parseFloat(parts[3]);
+        if (!isNaN(id) && !isNaN(mult)) awakenMultipliers[id] = mult;
+      }
     });
   } catch (err) { console.warn('CSV mapping load warning:', err); }
 }
@@ -261,6 +373,22 @@ function getMonsterSB(monster) {
 function getSkillInfo(monster) {
   const sid = monster.skill;
   return (sid && skillMap[sid]) ? skillMap[sid] : null;
+}
+
+/**
+ * アシストモンスターの火力倍率を計算（STEP2で選択された覚醒のみ有効）
+ * @param {Object} monster - アシストモンスター
+ * @returns {number} 倍率の乗算値（1 = 倍率なし）
+ */
+function calcDpsMultiplier(monster) {
+  const active = getActiveAwakens(monster);
+  let multiplier = 1;
+  for (const a of active) {
+    if (selectedDpsAwakens.has(a) && awakenMultipliers[a] && awakenMultipliers[a] > 1) {
+      multiplier *= awakenMultipliers[a];
+    }
+  }
+  return multiplier;
 }
 
 function getHasteTurns(monster) {
@@ -363,6 +491,7 @@ function goToStep(step) {
   // ステップ遷移時の情報更新
   if (step === 1) updateStep1BaseInfo();
   if (step === 2) updateStep2Summary();
+  if (step === 3) updateStep3PreAssistNote();
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -385,6 +514,16 @@ function initBaseSlots() {
       </div>
       <div class="search-results" id="base-results-${i}"></div>
       <div class="monster-info" id="base-info-${i}"></div>
+      <div class="pre-assist-pinned" id="pre-assist-pinned-${i}" style="display:none"></div>
+      <details class="pre-assist-details" id="pre-assist-details-${i}" style="margin-top:8px">
+        <summary class="field-label" style="cursor:pointer; outline:none; font-size:0.85rem;">📎 アシスト（任意）</summary>
+        <div class="search-wrapper" style="margin-top:6px">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="assist-search-${i}"
+                 placeholder="アシストNo. or 名前を入力" autocomplete="off">
+        </div>
+        <div class="search-results" id="assist-results-${i}"></div>
+      </details>
     `;
     container.appendChild(div);
 
@@ -393,6 +532,13 @@ function initBaseSlots() {
     input.addEventListener('input', () => searchMonsters(input.value, results, i));
     input.addEventListener('focus', () => { if (input.value.length > 0) results.classList.add('show'); });
     document.addEventListener('click', (e) => { if (!div.contains(e.target)) results.classList.remove('show'); });
+
+    // アシスト検索
+    const assistInput = div.querySelector(`#assist-search-${i}`);
+    const assistResults = div.querySelector(`#assist-results-${i}`);
+    assistInput.addEventListener('input', () => searchAssistMonsters(assistInput.value, assistResults, i));
+    assistInput.addEventListener('focus', () => { if (assistInput.value.length > 0) assistResults.classList.add('show'); });
+    document.addEventListener('click', (e) => { if (!div.contains(e.target)) assistResults.classList.remove('show'); });
   }
 
   // タブ切替
@@ -442,7 +588,7 @@ function selectBaseMonster(slotIdx, monster) {
   results.classList.remove('show');
   input.value = `No.${monster.no} ${monster.name}`;
 
-  const attrs = (monster.attributes || []).filter(a => a != null && a > 0);
+  const attrs = (monster.attributes || []).filter((a, idx) => a != null && (a > 0 || (idx === 0 && a === 0)));
   const types = (monster.types || []).filter(t => t > 0);
   const awakens = getActiveAwakens(monster);
 
@@ -468,6 +614,85 @@ function selectBaseMonster(slotIdx, monster) {
   }
 }
 
+// ==================== STEP0: アシスト事前入力 ====================
+
+function searchAssistMonsters(query, resultsEl, slotIdx) {
+  resultsEl.innerHTML = '';
+  if (!query || query.length < 1) { resultsEl.classList.remove('show'); return; }
+  const q = query.trim().toLowerCase();
+  let matches = [];
+  if (/^\d+$/.test(q)) {
+    matches = assistMonsters.filter(m => String(m.no).startsWith(q)).slice(0, 30);
+  } else {
+    matches = assistMonsters.filter(m => m.name && m.name.toLowerCase().includes(q)).slice(0, 30);
+  }
+  if (matches.length === 0) {
+    resultsEl.innerHTML = '<div style="padding:10px;color:var(--text-muted);font-size:0.82rem">該当なし</div>';
+    resultsEl.classList.add('show');
+    return;
+  }
+  matches.forEach(m => {
+    const item = document.createElement('div');
+    item.className = 'search-result-item';
+    item.innerHTML = `<span class="mon-no">No.${m.no}</span><span class="mon-name">${m.name}</span>`;
+    item.addEventListener('click', () => selectPreAssist(slotIdx, m));
+    resultsEl.appendChild(item);
+  });
+  resultsEl.classList.add('show');
+}
+
+function selectPreAssist(slotIdx, monster) {
+  pinnedAssists[slotIdx] = monster;
+
+  const pinned = document.getElementById(`pre-assist-pinned-${slotIdx}`);
+  const details = document.getElementById(`pre-assist-details-${slotIdx}`);
+  const assistInput = document.getElementById(`assist-search-${slotIdx}`);
+  const assistResults = document.getElementById(`assist-results-${slotIdx}`);
+
+  assistResults.classList.remove('show');
+  if (assistInput) assistInput.value = '';
+  if (details) details.removeAttribute('open');
+
+  const attrs = (monster.attributes || []).filter((a, idx) => a != null && (a > 0 || (idx === 0 && a === 0)));
+  const types = (monster.types || []).filter(t => t > 0);
+  const awakens = getActiveAwakens(monster);
+  const skill = getSkillInfo(monster);
+
+  pinned.innerHTML = `
+    <div class="pre-assist-card">
+      <div class="pre-assist-header">
+        <span class="pre-assist-pin-icon">📍</span>
+        <span class="assist-slot-label">事前アシスト</span>
+        <button class="btn-remove-pre-assist" onclick="removePreAssist(${slotIdx})">❌ 解除</button>
+      </div>
+      <div class="assist-id-name">
+        <span class="assist-id">No.${monster.no}</span>
+        <span class="assist-name">${monster.name}</span>
+      </div>
+      <div class="assist-meta">
+        ${attrs.map(a => `<img src="${attrIcon(a)}" title="${attrName(a)}">`).join('')}
+        ${types.map(t => `<img src="${typeIcon(t)}" title="${typeName(t)}">`).join('')}
+      </div>
+      <div class="assist-awakens">
+        ${awakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}
+      </div>
+      <div class="assist-skill" style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
+        ${skill ? `${skill.name} (CT: ${skill.baseTurn}→${skill.minTurn})` : ''}
+      </div>
+    </div>
+  `;
+  pinned.style.display = 'block';
+}
+
+function removePreAssist(slotIdx) {
+  delete pinnedAssists[slotIdx];
+  const pinned = document.getElementById(`pre-assist-pinned-${slotIdx}`);
+  if (pinned) {
+    pinned.innerHTML = '';
+    pinned.style.display = 'none';
+  }
+}
+
 // ==================== STEP 1: 条件スロット ====================
 
 function initCondSlots() {
@@ -482,7 +707,7 @@ function initCondSlots() {
     div.className = `slot-content ${i === 0 ? 'active' : ''}`;
     div.id = `cond-slot-${i}`;
 
-    const attrIcons = [1, 2, 3, 4, 5].map(id =>
+    const attrIcons = [1, 2, 3, 4, 5, 0].map(id =>
       `<div class="icon-btn" data-type="attr" data-id="${id}" data-slot="${i}" title="${attrName(id)}"><img src="${attrIcon(id)}"></div>`
     ).join('');
 
@@ -512,10 +737,27 @@ function initCondSlots() {
       <div class="selected-conditions" id="cond-selected-${i}">
         <span style="color:var(--text-muted);font-size:0.8rem">なし</span>
       </div>
-      <div class="field-label" style="margin-top:12px">🔍 スキル内容キーワード条件（任意・複数語句はスペース区切り）</div>
-      <input type="text" class="keyword-input" data-slot="${i}" placeholder="例：覚醒無効　ダメージ吸収" 
-             style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); font-size:0.85rem;">
-      <p style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">※ヘイスト、遅延必要数は後ほど入力するため、原則ここには記入不要です。</p>
+      <details class="skill-detail-details" style="margin-top:12px">
+        <summary class="field-label" style="cursor:pointer; outline:none;">🔍 スキル詳細条件</summary>
+        <div style="margin-top:8px;">
+          <div class="field-label" style="font-size:0.82rem">キーワード条件（任意・複数語句はスペース区切り）</div>
+          <input type="text" class="keyword-input" data-slot="${i}" placeholder="例：覚醒無効　ダメージ吸収" 
+                 style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); font-size:0.85rem;">
+          <p style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">※ヘイスト、遅延必要数は後ほど入力するため、原則ここには記入不要です。</p>
+          <div class="num-input-row" style="margin-top:8px">
+            <label style="font-size:0.82rem">⏱️ スキルマ ターン以下:</label>
+            <input type="number" class="num-input min-turn-input" data-slot="${i}" min="1" placeholder="なし"
+                   style="width:70px; padding:4px 8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); font-size:0.85rem;">
+          </div>
+          <p style="font-size:0.72rem; color:var(--text-muted); margin-top:2px; margin-left:4px;">※アシストスキルを使いたい時に</p>
+          <div class="num-input-row" style="margin-top:4px">
+            <label style="font-size:0.82rem">⏱️ スキル初期 ターン以上:</label>
+            <input type="number" class="num-input max-turn-input" data-slot="${i}" min="1" placeholder="なし"
+                   style="width:70px; padding:4px 8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); font-size:0.85rem;">
+          </div>
+          <p style="font-size:0.72rem; color:var(--text-muted); margin-top:2px; margin-left:4px;">※アシストスキルを貯めたくない時に</p>
+        </div>
+      </details>
       <div class="toggle-row" style="margin-top:12px">
         <span class="toggle-label">⚡ アシストスキル使用可否（変身キャラ等はOFF推奨）</span>
         <label class="toggle-switch">
@@ -537,8 +779,21 @@ function initCondSlots() {
           <span class="toggle-slider-fire"></span>
         </label>
       </div>
+      <div class="dps-multiplier-row-simple" id="dps-mult-row-${i}" style="display:none; margin-top:4px; margin-left:24px;">
+        <label style="font-size:0.82rem">🔥 必要火力倍率（x倍以上）:</label>
+        <input type="number" class="num-input dps-mult-input" data-slot="${i}" min="1" step="0.5" placeholder="なし"
+               style="width:80px; padding:4px 8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); font-size:0.85rem;">
+        <p style="font-size:0.72rem; color:var(--text-muted); margin-top:2px;">※任意 — STEP2で選択された覚醒の倍率の乗算値</p>
+      </div>
       <div class="slot-tabs-bottom" id="cond-slot-tabs-bottom-${i}">
         ${[0, 1, 2, 3, 4, 5].map(j => `<div class="slot-tab slot-tab-sm ${j === i ? 'active' : ''}" data-slot="${j}" data-from-bottom="1">スロット${j + 1}</div>`).join('')}
+      </div>
+      <div class="cond-base-bottom-info" id="cond-base-bottom-${i}" style="display:none"></div>
+      <div class="cond-preassist-overlay" id="cond-preassist-overlay-${i}" style="display:none">
+        <div class="preassist-overlay-content">
+          <span class="preassist-overlay-icon">📍</span>
+          <span>アシスト指定済み — STEP0で設定済みのため入力不要です</span>
+        </div>
       </div>
     `;
     container.appendChild(div);
@@ -579,6 +834,7 @@ function initCondSlots() {
       grid.querySelectorAll('.icon-btn').forEach(b => b.classList.remove('selected'));
       if (!was) { btn.classList.add('selected'); slotConditions[slot].attrCondition = id; }
       else { slotConditions[slot].attrCondition = null; }
+      // attrConditionは0(無属性)も有効な値なので、nullチェックで判定する
     } else if (type === 'type') {
       const grid = btn.closest('.cond-type-grid');
       const was = btn.classList.contains('selected');
@@ -616,8 +872,32 @@ function initCondSlots() {
       slotConditions[parseInt(e.target.dataset.slot)].skillUsable = e.target.checked;
     if (e.target.classList.contains('resonance-toggle'))
       slotConditions[parseInt(e.target.dataset.slot)].resonance = e.target.checked;
-    if (e.target.classList.contains('dps-priority-toggle'))
-      slotConditions[parseInt(e.target.dataset.slot)].dpsPriority = e.target.checked;
+    if (e.target.classList.contains('dps-priority-toggle')) {
+      const slot = parseInt(e.target.dataset.slot);
+      slotConditions[slot].dpsPriority = e.target.checked;
+      // 火力優先ON/OFFで倍率入力行の表示を切り替え
+      const multRow = document.getElementById(`dps-mult-row-${slot}`);
+      if (multRow) multRow.style.display = e.target.checked ? 'block' : 'none';
+      if (!e.target.checked) {
+        slotConditions[slot].requiredDpsMultiplier = null;
+        const multInput = multRow ? multRow.querySelector('.dps-mult-input') : null;
+        if (multInput) multInput.value = '';
+      }
+    }
+    // ターン数入力
+    if (e.target.classList.contains('min-turn-input')) {
+      const val = e.target.value.trim();
+      slotConditions[parseInt(e.target.dataset.slot)].minTurn = val ? parseInt(val) : null;
+    }
+    if (e.target.classList.contains('max-turn-input')) {
+      const val = e.target.value.trim();
+      slotConditions[parseInt(e.target.dataset.slot)].maxTurn = val ? parseInt(val) : null;
+    }
+    // 火力倍率入力
+    if (e.target.classList.contains('dps-mult-input')) {
+      const val = e.target.value.trim();
+      slotConditions[parseInt(e.target.dataset.slot)].requiredDpsMultiplier = val ? parseFloat(val) : null;
+    }
   });
 
   // キーワード入力
@@ -655,14 +935,51 @@ function updateCondSelectedDisplay(slot) {
   });
 }
 
-// --- STEP1: ベースモンスター情報を各スロットに表示 ---
+// --- STEP1: ベースモンスター情報を各スロットに表示 + アシスト固定済グレーアウト ---
 function updateStep1BaseInfo() {
   for (let i = 0; i < 6; i++) {
     const panel = document.getElementById(`cond-base-info-${i}`);
+    const bottomPanel = document.getElementById(`cond-base-bottom-${i}`);
+    const overlay = document.getElementById(`cond-preassist-overlay-${i}`);
+    const slotDiv = document.getElementById(`cond-slot-${i}`);
     const base = baseMonsters[i];
+    const pinned = pinnedAssists[i];
+
+    // アシスト固定済グレーアウト
+    if (pinned) {
+      if (slotDiv) slotDiv.classList.add('slot-preassist-locked');
+      if (overlay) {
+        const pAttrs = (pinned.attributes || []).filter((a, idx) => a != null && (a > 0 || (idx === 0 && a === 0)));
+        const pAwakens = getActiveAwakens(pinned);
+        overlay.innerHTML = `
+          <div class="preassist-overlay-content">
+            <span class="preassist-overlay-icon">📍</span>
+            <div>
+              <div style="font-weight:700; margin-bottom:4px;">アシスト指定済み</div>
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <span>No.${pinned.no} ${pinned.name}</span>
+                ${pAttrs.map(a => `<img src="${attrIcon(a)}" style="width:16px;height:16px">`).join('')}
+              </div>
+              <div style="display:flex;gap:2px;flex-wrap:wrap;margin-top:4px;">
+                ${pAwakens.map(a => `<img src="${awakenIcon(a)}" style="width:16px;height:16px" title="${awakenName(a)}">`).join('')}
+              </div>
+              <div style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;">
+                STEP0で設定済みのため、このスロットの条件入力は不要です
+              </div>
+            </div>
+          </div>
+        `;
+        overlay.style.display = 'flex';
+      }
+    } else {
+      if (slotDiv) slotDiv.classList.remove('slot-preassist-locked');
+      if (overlay) overlay.style.display = 'none';
+    }
+
+    // ベースモンスター情報（上部）
     if (base) {
       const awakens = getActiveAwakens(base);
-      const attrs = (base.attributes || []).filter(a => a != null && a > 0);
+      const attrs = (base.attributes || []).filter((a, idx) => a != null && (a > 0 || (idx === 0 && a === 0)));
       const types = (base.types || []).filter(t => t > 0);
       panel.innerHTML = `
         <div class="summary-title">📋 ベースモンスター</div>
@@ -684,9 +1001,31 @@ function updateStep1BaseInfo() {
         </div>
       `;
       panel.style.display = 'block';
+
+      // 下部スロットボタン下にもベース情報を再掲
+      if (bottomPanel) {
+        bottomPanel.innerHTML = `
+          <div class="base-bottom-card">
+            <div class="base-bottom-row">
+              <span class="bs-label">No.${base.no}</span>
+              <span class="bs-name">${base.name}</span>
+              ${attrs.map(a => `<img src="${attrIcon(a)}" style="width:16px;height:16px" title="${attrName(a)}">`).join('')}
+              ${types.map(t => `<img src="${typeIcon(t)}" style="width:16px;height:16px" title="${typeName(t)}">`).join('')}
+            </div>
+            <div class="base-bottom-awakens">
+              ${awakens.map(a => `<img src="${awakenIcon(a)}" style="width:16px;height:16px" title="${awakenName(a)}">`).join('')}
+            </div>
+          </div>
+        `;
+        bottomPanel.style.display = 'block';
+      }
     } else {
       panel.innerHTML = '';
       panel.style.display = 'none';
+      if (bottomPanel) {
+        bottomPanel.innerHTML = '';
+        bottomPanel.style.display = 'none';
+      }
     }
   }
 }
@@ -800,6 +1139,30 @@ function updateStep2Summary() {
   el.innerHTML = html;
 }
 
+// --- STEP3: 事前アシスト案内の更新 ---
+function updateStep3PreAssistNote() {
+  const note = document.getElementById('step3-preassist-note');
+  if (!note) return;
+  const pinnedEntries = Object.entries(pinnedAssists);
+  if (pinnedEntries.length === 0) {
+    note.style.display = 'none';
+    return;
+  }
+  const names = pinnedEntries.map(([idx, m]) => `スロット${parseInt(idx) + 1}: ${m.name}`).join('、');
+  note.innerHTML = `
+    <div class="preassist-note-card">
+      <span class="preassist-note-icon">📍</span>
+      <div>
+        <strong>事前入力済みアシスト:</strong> ${names}<br>
+        <span style="font-size:0.8rem; color:var(--text-muted);">
+          上記を含めた<strong>アシスト6体で必要となる覚醒数とスキブ数</strong>を入力してください。
+        </span>
+      </div>
+    </div>
+  `;
+  note.style.display = 'block';
+}
+
 // ==================== STEP 3: パーティ覚醒グリッド（全覚醒表示） ====================
 
 function initPartyAwakensGrid() {
@@ -908,11 +1271,19 @@ function hideProgressUI() {
 }
 
 async function runOptimization() {
+  // 「この条件で検索」ボタンにバブルエフェクト
+  const btnOptimize = document.getElementById('btn-optimize');
+  if (btnOptimize) triggerPopEffect(btnOptimize);
+
   const btn = document.getElementById('recalc-btn-el');
   const label = document.getElementById('recalc-label');
   const iconDefault = document.getElementById('recalc-icon-default');
   const iconLoading = document.getElementById('recalc-icon-loading');
   const iconStop = document.getElementById('recalc-icon-stop');
+
+  // FABを検索開始と同時に表示
+  const fabRecalcEl = document.getElementById('fab-recalc');
+  if (fabRecalcEl) fabRecalcEl.style.display = 'block';
 
   // アニメーション: 縮小 (丸いアイコン化)
   if (btn) {
@@ -1077,8 +1448,10 @@ async function optimize() {
       throw new Error(`スロット${i + 1}${base ? `(${base.name})` : ''}に条件を満たすアシストがありません。条件を緩めてください。`);
     }
 
-    // 固定スロットが多い場合（未固定3スロット以下）: 候補制限なしの全数探索
-    if (unpinnedCount <= 3) {
+    // 検索モードに応じて候補制限を切替
+    // searchModeFast=false（じっくり検索）: 候補制限なしの全数探索
+    // searchModeFast=true（高速検索）: スコアリングで候補を絞り込み
+    if (!searchModeFast && unpinnedCount <= 3) {
       slotCandidates.push(raw);
     } else {
       // 通常モード: スコアリングで候補を絞り込み
@@ -1436,18 +1809,11 @@ function getAwakenCap(id) {
 
 function checkRequirementsMet(awakens, sb) {
   for (const [id, target] of Object.entries(partyRequiredAwakens)) {
-    // 耐性の特殊換算
     const aid = parseInt(id);
-    let have = 0;
-    if (aid === 11 || aid === 68) have = (awakens[11] || 0) * 1 + (awakens[68] || 0) * 5;
-    else if (aid === 12 || aid === 69) have = (awakens[12] || 0) * 1 + (awakens[69] || 0) * 5;
-    else if (aid === 13 || aid === 70) have = (awakens[13] || 0) * 1 + (awakens[70] || 0) * 5;
-    else have = awakens[aid] || 0;
-
+    // 上位互換マッチング対応: getVirtualCountで仮想カウント
+    const have = getVirtualCount(aid, awakens);
     if (have < target) return false;
   }
-  // ★修正: 必要SBが指定されている場合は正確にチェック
-  // DFS内のsbは既にdelayAsSBを加味したスキブ合計なのでそのまま比較
   if (requiredSB > 0 && sb < requiredSB) return false;
   return true;
 }
@@ -1456,22 +1822,9 @@ function canPotentiallyMeetRequirements(slot, currentAwakens, currentSB, maxRema
   const remain = maxRemains[slot];
   for (const [id, target] of Object.entries(partyRequiredAwakens)) {
     const aid = parseInt(id);
-    let currentHave = 0;
-    let potentialMax = 0;
-
-    if (aid === 11 || aid === 68) {
-      currentHave = (currentAwakens[11] || 0) * 1 + (currentAwakens[68] || 0) * 5;
-      potentialMax = (remain.awakens[11] || 0) * 1 + (remain.awakens[68] || 0) * 5;
-    } else if (aid === 12 || aid === 69) {
-      currentHave = (currentAwakens[12] || 0) * 1 + (currentAwakens[69] || 0) * 5;
-      potentialMax = (remain.awakens[12] || 0) * 1 + (remain.awakens[69] || 0) * 5;
-    } else if (aid === 13 || aid === 70) {
-      currentHave = (currentAwakens[13] || 0) * 1 + (currentAwakens[70] || 0) * 5;
-      potentialMax = (remain.awakens[13] || 0) * 1 + (remain.awakens[70] || 0) * 5;
-    } else {
-      currentHave = currentAwakens[aid] || 0;
-      potentialMax = remain.awakens[aid] || 0;
-    }
+    // 上位互換マッチング対応
+    const currentHave = getVirtualCount(aid, currentAwakens);
+    const potentialMax = getVirtualCount(aid, remain.awakens);
 
     if (currentHave + potentialMax < target) return false;
   }
@@ -1496,20 +1849,25 @@ function filterCandidatesForSlot(slotIdx) {
     if (excludedMonsterNos.has(m.no)) return false;
     const active = getActiveAwakens(m);
 
-    // 必須覚醒チェック
+    // 必須覚醒チェック（上位互換マッチング対応）
     if (cond.requiredAwakens.length > 0) {
       const req = {};
       cond.requiredAwakens.forEach(id => { req[id] = (req[id] || 0) + 1; });
       for (const [id, cnt] of Object.entries(req)) {
-        if (active.filter(a => a === parseInt(id)).length < cnt) return false;
+        if (getVirtualCount(parseInt(id), active) < cnt) return false;
       }
     }
 
-    // 属性条件
-    if (cond.attrCondition) {
-      const mAttr = (m.attributes || [])[0];
-      const sAttr = (m.attributes || [])[1];
-      if (mAttr !== cond.attrCondition && sAttr !== cond.attrCondition) return false;
+    // 属性条件（attrCondition=0は無属性なのでnullチェックで判定）
+    if (cond.attrCondition != null) {
+      if (cond.attrCondition === 0) {
+        // 無属性: 第一属性が0のモンスターのみ
+        if ((m.attributes || [])[0] !== 0) return false;
+      } else {
+        const mAttr = (m.attributes || [])[0];
+        const sAttr = (m.attributes || [])[1];
+        if (mAttr !== cond.attrCondition && sAttr !== cond.attrCondition) return false;
+      }
     }
 
     // タイプ条件
@@ -1537,6 +1895,22 @@ function filterCandidatesForSlot(slotIdx) {
         const isMatch = keywords.every(k => fullText.includes(k));
         if (!isMatch) return false;
       }
+    }
+
+    // スキルターン数条件
+    if (cond.minTurn != null || cond.maxTurn != null) {
+      const skill = getSkillInfo(m);
+      if (!skill) return false;
+      // 最短ターン条件: スキルマターンが入力値以下
+      if (cond.minTurn != null && skill.minTurn > cond.minTurn) return false;
+      // 最長ターン条件: スキル初期ターンが入力値以上
+      if (cond.maxTurn != null && skill.baseTurn < cond.maxTurn) return false;
+    }
+
+    // 火力倍率条件
+    if (cond.requiredDpsMultiplier != null && cond.requiredDpsMultiplier > 1) {
+      const mult = calcDpsMultiplier(m);
+      if (mult < cond.requiredDpsMultiplier) return false;
     }
 
     return true;
@@ -1614,11 +1988,11 @@ function evaluateState(state) {
 // ==================== 結果表示 ====================
 
 // DFS中のisFullyMet（calcSBBreakdownを使わず、DFS計算値で判定）
-// アシストのみの覚醒カウントで充足を判定
+// アシストのみの覚醒カウントで充足を判定（上位互換対応）
 function isFullyMetDirect(state) {
   const counts = state.assistAwakenCounts || state.awakenCounts;
   for (const [id, cnt] of Object.entries(partyRequiredAwakens)) {
-    if ((counts[parseInt(id)] || 0) < cnt) return false;
+    if (getVirtualCount(parseInt(id), counts) < cnt) return false;
   }
   if (requiredSB > 0 && state.sbTotal < requiredSB) return false;
   return true;
@@ -1651,7 +2025,7 @@ function buildResultCard(result, idx, isRealtime) {
   for (let i = 0; i < 6; i++) {
     const m = result.picks[i];
     const allAw = getAllAwakens(m);
-    const attrs = (m.attributes || []).filter(a => a != null && a > 0);
+    const attrs = (m.attributes || []).filter((a, idx) => a != null && (a > 0 || (idx === 0 && a === 0)));
     const types = (m.types || []).filter(t => t > 0);
     const skill = getSkillInfo(m);
     const baseMon = baseMonsters[i];
@@ -1719,7 +2093,7 @@ function buildResultCard(result, idx, isRealtime) {
     html += '<div class="summary-box" style="margin-top:8px"><div class="field-label">覚醒充足状況</div>';
     for (const [id, cnt] of Object.entries(partyRequiredAwakens)) {
       const assistCounts = result.assistAwakenCounts || result.awakenCounts;
-      const have = assistCounts[parseInt(id)] || 0;
+      const have = getVirtualCount(parseInt(id), assistCounts);
       const ok = have >= cnt;
       html += `<div class="summary-row">
         <span class="summary-label" style="display:flex;align-items:center;gap:4px">
@@ -2082,11 +2456,13 @@ function clearAllExclusions() {
 function updatePinnedUI() {
   const section = document.getElementById('pinned-section');
   const list = document.getElementById('pinned-list');
+  const optimizeSection = document.getElementById('optimize-section');
   if (!section || !list) return;
 
   const entries = Object.entries(pinnedAssists);
   if (entries.length === 0) {
     section.style.display = 'none';
+    if (optimizeSection) optimizeSection.style.display = 'none';
     return;
   }
 
@@ -2119,6 +2495,47 @@ function updatePinnedUI() {
     recalcBtn.addEventListener('click', () => runOptimization());
     list.appendChild(recalcBtn);
   }
+
+  // 全6体固定時: 最適化セクションをアニメーション付きで表示
+  if (optimizeSection) {
+    if (entries.length === 6) {
+      const wasHidden = optimizeSection.style.display === 'none' || !optimizeSection.style.display;
+      optimizeSection.style.display = 'block';
+      // 結果と進捗をクリア
+      const results = document.getElementById('optimize-results');
+      if (results) results.innerHTML = '';
+      const prog = document.getElementById('optimize-progress');
+      if (prog) prog.style.display = 'none';
+
+      // 初回表示時: アニメーション + 自動スクロール
+      if (wasHidden) {
+        optimizeSection.classList.remove('optimize-unlock-anim');
+        void optimizeSection.offsetWidth; // reflow
+        optimizeSection.classList.add('optimize-unlock-anim');
+
+        // バブルエフェクト
+        const card = optimizeSection.querySelector('.optimize-card');
+        if (card) {
+          for (let b = 0; b < 8; b++) {
+            const bubble = document.createElement('div');
+            bubble.className = 'optimize-bubble';
+            bubble.style.left = `${10 + Math.random() * 80}%`;
+            bubble.style.animationDelay = `${Math.random() * 0.4}s`;
+            bubble.style.animationDuration = `${0.6 + Math.random() * 0.4}s`;
+            card.appendChild(bubble);
+            setTimeout(() => bubble.remove(), 1200);
+          }
+        }
+
+        // 自動スクロール
+        setTimeout(() => {
+          optimizeSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 300);
+      }
+    } else {
+      optimizeSection.style.display = 'none';
+    }
+  }
 }
 
 function clearAllPins() {
@@ -2128,10 +2545,10 @@ function clearAllPins() {
 }
 
 function isFullyMet(state) {
-  // アシストのみの覚醒カウントで充足を判定
+  // アシストのみの覚醒カウントで充足を判定（上位互換対応）
   const counts = state.assistAwakenCounts || state.awakenCounts;
   for (const [id, cnt] of Object.entries(partyRequiredAwakens)) {
-    if ((counts[parseInt(id)] || 0) < cnt) return false;
+    if (getVirtualCount(parseInt(id), counts) < cnt) return false;
   }
   if (requiredSB > 0) {
     const sb = calcSBBreakdown(state);
@@ -2174,6 +2591,530 @@ function calcSBBreakdown(state) {
   if (delayAsSB) assistTotal += maxDelay;
 
   return { baseSBTotal, assistAwakenSB: netAssistAwakenSB, assistSbPlus, haste, maxDelay, assistTotal };
+}
+
+// ==================== 最適化検索（6体確定後の向上策） ====================
+
+const OPTIMIZE_STRATEGIES = {
+  fire: { label: '🔥 火力向上', targetAwakens: [], useDpsMult: true },
+  heal: { label: '🩷 回復力向上', targetAwakens: [47, 104, 3], useDpsMult: false },
+  tank: { label: '💪 耐久力向上', targetAwakens: [46, 4, 5, 6, 7, 8, 1], useDpsMult: false },
+  operate: { label: '☝️ 操作性向上', targetAwakens: [53], useDpsMult: false },
+};
+
+/**
+ * 現在のベースライン（6体固定状態）の覚醒カウント・SB・各スロット倍率を取得
+ */
+function getCurrentBaseline() {
+  const awakenCounts = {};
+  let totalSB = 0;
+  const slotMultipliers = {};
+
+  for (let i = 0; i < 6; i++) {
+    const m = pinnedAssists[i];
+    if (!m) continue;
+    const active = getActiveAwakens(m);
+    active.forEach(a => { awakenCounts[a] = (awakenCounts[a] || 0) + 1; });
+    totalSB += getMonsterSB(m);
+    if (slotConditions[i].skillUsable) {
+      totalSB += getHasteTurns(m);
+      if (delayAsSB) totalSB += getDelayTurns(m);
+    }
+    slotMultipliers[i] = calcDpsMultiplier(m);
+  }
+
+  return { awakenCounts, totalSB, slotMultipliers };
+}
+
+/**
+ * 候補モンスターが覚醒要件・SB要件・火力倍率要件を維持しているかチェック
+ */
+function checkOptimizeConstraints(newPicks, baseline) {
+  const newAwakenCounts = {};
+  let newTotalSB = 0;
+
+  for (let i = 0; i < 6; i++) {
+    const m = newPicks[i];
+    if (!m) continue;
+    const active = getActiveAwakens(m);
+    active.forEach(a => { newAwakenCounts[a] = (newAwakenCounts[a] || 0) + 1; });
+    newTotalSB += getMonsterSB(m);
+    if (slotConditions[i].skillUsable) {
+      newTotalSB += getHasteTurns(m);
+      if (delayAsSB) newTotalSB += getDelayTurns(m);
+    }
+  }
+
+  // 覚醒要件チェック（アシスト合計で維持 — 上位互換対応）
+  for (const [id, target] of Object.entries(partyRequiredAwakens)) {
+    const aid = parseInt(id);
+    const have = getVirtualCount(aid, newAwakenCounts);
+    if (have < target) return false;
+  }
+
+  // SB要件チェック
+  if (requiredSB > 0 && newTotalSB < requiredSB) return false;
+
+  // 火力倍率: 各キャラごとに維持
+  for (let i = 0; i < 6; i++) {
+    const newMult = calcDpsMultiplier(newPicks[i]);
+    if (newMult < baseline.slotMultipliers[i]) return false;
+  }
+
+  return true;
+}
+
+/**
+ * 方針に応じた改善スコアを計算
+ */
+function calcOptimizeScore(newPicks, baseline, strategy) {
+  const strat = OPTIMIZE_STRATEGIES[strategy];
+  let score = 0;
+
+  if (strategy === 'fire') {
+    // 火力向上: 各スロットの倍率向上を評価
+    for (let i = 0; i < 6; i++) {
+      const newMult = calcDpsMultiplier(newPicks[i]);
+      const oldMult = baseline.slotMultipliers[i];
+      if (newMult > oldMult) {
+        score += (newMult - oldMult) * 100;
+      }
+    }
+  } else {
+    // 対象覚醒の増分を評価
+    const newAwakenCounts = {};
+    for (let i = 0; i < 6; i++) {
+      const m = newPicks[i];
+      if (!m) continue;
+      getActiveAwakens(m).forEach(a => { newAwakenCounts[a] = (newAwakenCounts[a] || 0) + 1; });
+    }
+
+    for (const aid of strat.targetAwakens) {
+      const oldCount = baseline.awakenCounts[aid] || 0;
+      const newCount = newAwakenCounts[aid] || 0;
+      const diff = newCount - oldCount;
+      if (diff > 0) {
+        // 優先度の高い覚醒に高いウェイト
+        const weight = (aid === strat.targetAwakens[0] || aid === strat.targetAwakens[1]) ? 100 : 50;
+        score += diff * weight;
+      }
+    }
+  }
+
+  return score;
+}
+
+/**
+ * 最適化検索メイン関数
+ */
+let optimizeStopRequested = false;
+
+async function runOptimizeSearch(strategy) {
+  const resultsEl = document.getElementById('optimize-results');
+  const progressEl = document.getElementById('optimize-progress');
+  const progressStatus = document.getElementById('optimize-progress-status');
+  if (!resultsEl) return;
+
+  optimizeStopRequested = false;
+  resultsEl.innerHTML = '';
+  if (progressEl) progressEl.style.display = 'block';
+  if (progressStatus) progressStatus.textContent = '最適化検索中...';
+
+  // FABをローディング状態に
+  const fabBtn = document.getElementById('recalc-btn-el');
+  const fabIconLoading = document.getElementById('recalc-icon-loading');
+  const fabIconDefault = document.getElementById('recalc-icon-default');
+  const fabIconStop = document.getElementById('recalc-icon-stop');
+  const fabLabel = document.getElementById('recalc-label');
+  if (fabBtn) {
+    fabBtn.classList.add('mini', 'loading-state');
+    fabBtn.classList.remove('hint-state', 'stop-state');
+    if (fabIconLoading) fabIconLoading.style.display = 'flex';
+    if (fabIconDefault) fabIconDefault.style.display = 'none';
+    if (fabIconStop) fabIconStop.style.display = 'none';
+  }
+  // 1.5秒後にストップボタンに変化
+  const fabHintTimer = setTimeout(() => {
+    if (fabBtn && fabBtn.classList.contains('loading-state')) {
+      fabBtn.classList.remove('mini', 'loading-state');
+      fabBtn.classList.add('hint-state');
+      if (fabIconLoading) fabIconLoading.style.display = 'none';
+      if (fabIconStop) fabIconStop.style.display = 'flex';
+      if (fabLabel) fabLabel.textContent = '最適化停止はここをクリック';
+    }
+  }, 1500);
+  const fabStopTimer = setTimeout(() => {
+    if (fabBtn && fabBtn.classList.contains('hint-state')) {
+      fabBtn.classList.remove('hint-state');
+      fabBtn.classList.add('mini', 'stop-state');
+    }
+  }, 4000);
+
+  // FABクリックで停止
+  const origOnclick = document.getElementById('fab-recalc')?.onclick;
+  const fabRecalc = document.getElementById('fab-recalc');
+  if (fabRecalc) {
+    fabRecalc.onclick = () => {
+      optimizeStopRequested = true;
+      clearTimeout(fabHintTimer);
+      clearTimeout(fabStopTimer);
+      resetRecalcBtn();
+      if (progressStatus) progressStatus.textContent = '検索を停止しました';
+    };
+  }
+
+  // ボタンのアクティブ状態を更新
+  document.querySelectorAll('.optimize-strategy-btn').forEach(btn => btn.classList.remove('active'));
+  const clickedBtn = document.querySelector(`.optimize-strategy-btn.${strategy}`);
+  if (clickedBtn) clickedBtn.classList.add('active');
+
+  await new Promise(r => setTimeout(r, 50)); // UI更新待ち
+
+  const baseline = getCurrentBaseline();
+  const currentPicks = {};
+  for (let i = 0; i < 6; i++) currentPicks[i] = pinnedAssists[i];
+
+  const improvements = [];
+  const usedNos = new Set(Object.values(pinnedAssists).map(m => m.no));
+
+  // 1体入替パターン
+  for (let i = 0; i < 6; i++) {
+    const originalMonster = currentPicks[i];
+    if (!originalMonster) continue;
+
+    // 対象スロットの候補モンスターを取得（固定を一時的に解除してフィルタリング）
+    const savedPin = pinnedAssists[i];
+    delete pinnedAssists[i];
+    const candidates = filterCandidatesForSlot(i);
+    pinnedAssists[i] = savedPin;
+
+    for (const candidate of candidates) {
+      if (candidate.no === originalMonster.no) continue;
+      if (usedNos.has(candidate.no) && candidate.no !== originalMonster.no) {
+        // 他のスロットで使用中のモンスターは除外（ただし元のモンスターは除く）
+        const isUsedElsewhere = Object.entries(pinnedAssists).some(
+          ([idx, m]) => parseInt(idx) !== i && m.no === candidate.no
+        );
+        if (isUsedElsewhere) continue;
+      }
+
+      const newPicks = { ...currentPicks };
+      newPicks[i] = candidate;
+
+      if (!checkOptimizeConstraints(newPicks, baseline)) continue;
+
+      const score = calcOptimizeScore(newPicks, baseline, strategy);
+      if (score > 0) {
+        improvements.push({
+          slots: [i],
+          before: [originalMonster],
+          after: [candidate],
+          score,
+          newPicks,
+        });
+      }
+    }
+
+    // UI応答性のため定期的にyield
+    if (i % 2 === 0) {
+      if (progressStatus) progressStatus.textContent = `最適化検索中... スロット${i + 1}/6`;
+      await new Promise(r => setTimeout(r, 0));
+      if (optimizeStopRequested) break;
+    }
+  }
+
+  // 2体入替パターン（全数探索 + 非同期yield）
+  if (progressStatus) progressStatus.textContent = '最適化検索中... 2体入替パターン探索中';
+  await new Promise(r => setTimeout(r, 0));
+
+  let checkCount = 0;
+  for (let i = 0; i < 5; i++) {
+    for (let j = i + 1; j < 6; j++) {
+      const origI = currentPicks[i];
+      const origJ = currentPicks[j];
+      if (!origI || !origJ) continue;
+
+      // 候補取得（全数）
+      const savedPinI = pinnedAssists[i];
+      const savedPinJ = pinnedAssists[j];
+      delete pinnedAssists[i];
+      delete pinnedAssists[j];
+      const candidatesI = filterCandidatesForSlot(i);
+      const candidatesJ = filterCandidatesForSlot(j);
+      pinnedAssists[i] = savedPinI;
+      pinnedAssists[j] = savedPinJ;
+
+      for (const ci of candidatesI) {
+        if (optimizeStopRequested) break;
+        if (ci.no === origI.no) continue;
+        const isUsedElsewhereI = Object.entries(pinnedAssists).some(
+          ([idx, m]) => parseInt(idx) !== i && parseInt(idx) !== j && m.no === ci.no
+        );
+        if (isUsedElsewhereI) continue;
+
+        for (const cj of candidatesJ) {
+          if (optimizeStopRequested) break;
+          if (cj.no === origJ.no || cj.no === ci.no) continue;
+          const isUsedElsewhereJ = Object.entries(pinnedAssists).some(
+            ([idx, m]) => parseInt(idx) !== i && parseInt(idx) !== j && m.no === cj.no
+          );
+          if (isUsedElsewhereJ) continue;
+
+          checkCount++;
+          // 非同期yield: 5000回ごとにUIに制御を返す
+          if (checkCount % 5000 === 0) {
+            if (progressStatus) progressStatus.textContent = `最適化検索中... ${checkCount.toLocaleString()}件チェック済`;
+            await new Promise(r => setTimeout(r, 0));
+          }
+
+          const newPicks = { ...currentPicks };
+          newPicks[i] = ci;
+          newPicks[j] = cj;
+
+          if (!checkOptimizeConstraints(newPicks, baseline)) continue;
+
+          const score = calcOptimizeScore(newPicks, baseline, strategy);
+          if (score > 0) {
+            improvements.push({
+              slots: [i, j],
+              before: [origI, origJ],
+              after: [ci, cj],
+              score,
+              newPicks,
+            });
+          }
+        }
+      }
+
+      if (optimizeStopRequested) break;
+      await new Promise(r => setTimeout(r, 0));
+    }
+    if (optimizeStopRequested) break;
+  }
+
+  // スコア順でソート
+  improvements.sort((a, b) => b.score - a.score);
+
+  if (progressEl) progressEl.style.display = 'none';
+
+  // FABをリセット & onclickを元に戻す
+  clearTimeout(fabHintTimer);
+  clearTimeout(fabStopTimer);
+  resetRecalcBtn();
+  if (fabRecalc && origOnclick) fabRecalc.onclick = origOnclick;
+
+  // 結果表示
+  displayOptimizeResults(improvements.slice(0, 10), baseline, strategy);
+}
+
+/**
+ * BEFORE/AFTERカードで最適化結果を表示
+ */
+function displayOptimizeResults(results, baseline, strategy) {
+  const container = document.getElementById('optimize-results');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const strat = OPTIMIZE_STRATEGIES[strategy];
+
+  if (results.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding:20px; text-align:center;">
+        <div class="emoji-lg">😊</div>
+        <p>現在の組み合わせが既に最適です！<br>${strat.label}の改善候補は見つかりませんでした。</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = `<div class="optimize-results-header">
+    <span class="strategy-badge ${strategy}">${strat.label}</span>
+    <span style="color:var(--text-muted); font-size:0.82rem">${results.length}件の改善候補</span>
+  </div>`;
+
+  results.forEach((result, idx) => {
+    const card = document.createElement('div');
+    card.className = 'optimize-result-card';
+
+    let slotsHtml = result.slots.map((slotIdx, k) => {
+      const before = result.before[k];
+      const after = result.after[k];
+      const baseMon = baseMonsters[slotIdx];
+      const beforeAwakens = getActiveAwakens(before);
+      const afterAwakens = getActiveAwakens(after);
+      const beforeSkill = getSkillInfo(before);
+      const afterSkill = getSkillInfo(after);
+      const beforeMult = calcDpsMultiplier(before);
+      const afterMult = calcDpsMultiplier(after);
+      const multDiff = afterMult - beforeMult;
+
+      return `
+        <div class="optimize-slot-row">
+          <div class="optimize-slot-label">
+            スロット${slotIdx + 1}${baseMon ? ` (${baseMon.name})` : ''}
+          </div>
+          <div class="optimize-compare">
+            <div class="optimize-before">
+              <div class="optimize-compare-label">BEFORE</div>
+              <div class="optimize-mon-name">No.${before.no} ${before.name}</div>
+              <div class="optimize-awakens">${beforeAwakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}</div>
+              ${beforeSkill ? `<div class="optimize-skill">${beforeSkill.name} (${beforeSkill.baseTurn}→${beforeSkill.minTurn})</div>` : ''}
+              ${beforeMult > 1 ? `<div class="optimize-mult">倍率: x${beforeMult.toFixed(1)}</div>` : ''}
+            </div>
+            <div class="optimize-arrow">→</div>
+            <div class="optimize-after">
+              <div class="optimize-compare-label">AFTER</div>
+              <div class="optimize-mon-name">No.${after.no} ${after.name}</div>
+              <div class="optimize-awakens">${afterAwakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}">`).join('')}</div>
+              ${afterSkill ? `<div class="optimize-skill">${afterSkill.name} (${afterSkill.baseTurn}→${afterSkill.minTurn})</div>` : ''}
+              ${afterMult > 1 ? `<div class="optimize-mult ${multDiff > 0 ? 'improved' : ''}">倍率: x${afterMult.toFixed(1)}${multDiff > 0 ? ` (+${multDiff.toFixed(1)})` : ''}</div>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // 覚醒差分の計算
+    const diffHtml = buildAwakenDiffHtml(result.newPicks, baseline, strategy);
+
+    card.innerHTML = `
+      <div class="optimize-card-header">
+        <span class="optimize-rank">${idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}</span>
+        <span class="optimize-score-label">改善スコア: ${result.score.toFixed(0)}</span>
+      </div>
+      ${slotsHtml}
+      ${diffHtml}
+      <div class="optimize-actions">
+        <button class="btn btn-gold btn-sm btn-apply-optimize" data-idx="${idx}">✅ この変更を適用</button>
+      </div>
+    `;
+
+    // 適用ボタンのイベント
+    card.querySelector('.btn-apply-optimize').addEventListener('click', (e) => {
+      const applyBtn = e.currentTarget;
+
+      // pinnedAssistsを更新
+      for (let i = 0; i < 6; i++) {
+        pinnedAssists[i] = result.newPicks[i];
+      }
+      updatePinnedUI();
+
+      // ボタンを「適用済み」に変更
+      applyBtn.textContent = '✅ 適用済み';
+      applyBtn.disabled = true;
+      applyBtn.style.opacity = '0.6';
+
+      // 結果をハイライト
+      const stLabel = document.getElementById('optimize-progress-status');
+      if (stLabel) {
+        stLabel.textContent = '適用完了！';
+      }
+
+      // 適用された組み合わせパターンを結果カードとして表示
+      const awakenCounts = {};
+      const assistAwakenCounts = {};
+      let sbTotal = 0;
+      for (let i = 0; i < 6; i++) {
+        const m = result.newPicks[i];
+        if (!m) continue;
+        // ベース覚醒を含むカウント
+        const base = baseMonsters[i];
+        if (base) {
+          getBaseAwakensContribution(base).forEach(id => {
+            if (id === 0 || id === 49) return;
+            awakenCounts[id] = (awakenCounts[id] || 0) + 1;
+          });
+        }
+        // アシスト覚醒カウント
+        getActiveAwakens(m).forEach(a => {
+          awakenCounts[a] = (awakenCounts[a] || 0) + 1;
+          assistAwakenCounts[a] = (assistAwakenCounts[a] || 0) + 1;
+        });
+        // SB計算
+        sbTotal += getMonsterSB(m);
+        if (slotConditions[i].skillUsable) {
+          sbTotal += getHasteTurns(m);
+          if (delayAsSB) sbTotal += getDelayTurns(m);
+        }
+      }
+
+      const appliedResult = {
+        picks: result.newPicks,
+        awakenCounts,
+        assistAwakenCounts,
+        score: 0,
+        sbTotal
+      };
+
+      // 既存の適用結果表示を削除（再適用時の重複防止）
+      const existingApplied = card.parentElement.querySelector('.optimize-applied-result');
+      if (existingApplied) existingApplied.remove();
+
+      // resultカードを生成して表示
+      const appliedWrapper = document.createElement('div');
+      appliedWrapper.className = 'optimize-applied-result';
+      appliedWrapper.innerHTML = `
+        <div class="section-title" style="margin-top:16px;font-size:0.9rem;color:var(--accent-gold)">
+          <span class="emoji">📋</span> 適用された組み合わせ
+        </div>
+      `;
+      const resultCard = buildResultCard(appliedResult, 0, false);
+      appliedWrapper.appendChild(resultCard);
+      card.after(appliedWrapper);
+
+      // 表示位置にスクロール
+      setTimeout(() => {
+        appliedWrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    });
+
+    container.appendChild(card);
+  });
+}
+
+/**
+ * 覚醒差分HTMLを生成
+ */
+function buildAwakenDiffHtml(newPicks, baseline, strategy) {
+  const newAwakenCounts = {};
+  for (let i = 0; i < 6; i++) {
+    const m = newPicks[i];
+    if (!m) continue;
+    getActiveAwakens(m).forEach(a => { newAwakenCounts[a] = (newAwakenCounts[a] || 0) + 1; });
+  }
+
+  // 全覚醒IDを集める（旧・新の両方）
+  const allIds = new Set([
+    ...Object.keys(baseline.awakenCounts).map(Number),
+    ...Object.keys(newAwakenCounts).map(Number),
+  ]);
+
+  // 変化のある覚醒のみ抽出
+  let diffItems = [];
+  for (const aid of allIds) {
+    const oldCount = baseline.awakenCounts[aid] || 0;
+    const newCount = newAwakenCounts[aid] || 0;
+    const diff = newCount - oldCount;
+    if (diff !== 0) {
+      diffItems.push({ id: aid, diff, oldCount, newCount });
+    }
+  }
+
+  if (diffItems.length === 0) return '';
+
+  // 増加を先、減少を後に並べる
+  diffItems.sort((a, b) => b.diff - a.diff);
+
+  const diffHtmlItems = diffItems.map(d => {
+    const cls = d.diff > 0 ? 'optimize-diff-added' : 'optimize-diff-removed';
+    const sign = d.diff > 0 ? '+' : '';
+    return `<span class="${cls}"><img src="${awakenIcon(d.id)}" title="${awakenName(d.id)}">${d.oldCount}→${d.newCount}(${sign}${d.diff})</span>`;
+  }).join('');
+
+  return `<div class="optimize-diff-section">
+    <span class="optimize-diff-label">覚醒合計変化:</span>
+    ${diffHtmlItems}
+  </div>`;
 }
 
 // ==================== 初期化 ====================
@@ -2246,16 +3187,103 @@ function initInfoModal() {
 }
 
 // FABクリックハンドラ
-function handleRecalcClick() {
+function handleRecalcClick(event) {
   const btn = document.getElementById('recalc-btn-el');
+
+  // ポップアップ表示中はFABクリックを無視（ポップアップ内ボタンで処理）
+  if (searchModePopupActive) return;
+
   triggerPopEffect(document.getElementById('fab-recalc'));
 
-  if (btn && btn.classList.contains('stop-state')) {
+  if (btn && (btn.classList.contains('stop-state') || btn.classList.contains('hint-state'))) {
     stopOptimization();
     resetRecalcBtn();
+  } else if (btn && btn.classList.contains('loading-state')) {
+    // ローディング中はクリックを無視
+    return;
   } else {
-    runOptimization();
+    // 固定3体以上の場合、検索モード選択ポップアップを表示
+    const pinnedCount = Object.keys(pinnedAssists).length;
+    if (pinnedCount >= 3) {
+      showSearchModePopup();
+    } else {
+      searchModeFast = true; // 2体以下は常に高速（デフォルト）
+      runOptimization();
+    }
   }
+}
+
+// 検索モード選択ポップアップの表示
+function showSearchModePopup() {
+  searchModePopupActive = true;
+  const popup = document.getElementById('search-mode-popup');
+  const backdrop = document.getElementById('search-mode-backdrop');
+  if (!popup || !backdrop) return;
+
+  // ボタンをリセット
+  popup.querySelectorAll('.search-mode-btn').forEach(b => {
+    b.classList.remove('sucking', 'fade-away');
+    b.style.display = 'flex';
+  });
+
+  popup.classList.remove('hide');
+  popup.classList.add('show');
+  backdrop.classList.remove('hide');
+  backdrop.classList.add('show');
+}
+
+// 検索モード選択ポップアップの非表示
+function hideSearchModePopup() {
+  const popup = document.getElementById('search-mode-popup');
+  const backdrop = document.getElementById('search-mode-backdrop');
+  if (!popup || !backdrop) return;
+
+  popup.classList.remove('show');
+  popup.classList.add('hide');
+  backdrop.classList.remove('show');
+  backdrop.classList.add('hide');
+  setTimeout(() => {
+    popup.style.display = '';
+    popup.classList.remove('hide');
+    backdrop.style.display = '';
+    backdrop.classList.remove('hide');
+    searchModePopupActive = false;
+  }, 350);
+}
+
+// 検索モード選択後の処理
+function selectSearchMode(mode, clickedBtn) {
+  // バブルエフェクト
+  triggerPopEffect(clickedBtn);
+
+  // もう一方をフェードアウト
+  const popup = document.getElementById('search-mode-popup');
+  popup.querySelectorAll('.search-mode-btn').forEach(b => {
+    if (b !== clickedBtn) b.classList.add('fade-away');
+  });
+
+  // 選択ボタンを吸い込み
+  setTimeout(() => {
+    clickedBtn.classList.add('sucking');
+  }, 100);
+
+  // ポップアップ消去 & 計算開始
+  setTimeout(() => {
+    const backdrop = document.getElementById('search-mode-backdrop');
+    popup.classList.remove('show');
+    popup.classList.add('hide');
+    if (backdrop) {
+      backdrop.classList.remove('show');
+      backdrop.classList.add('hide');
+    }
+  }, 500);
+
+  setTimeout(() => {
+    searchModePopupActive = false;
+    // 検索モードをセット
+    searchModeFast = (mode === 'fast');
+    runOptimization();
+  }, 700);
 }
 
 // 弾けるエフェクト
@@ -2301,4 +3329,6 @@ function resetRecalcBtn() {
     if (iconLoading) iconLoading.style.display = 'none';
     if (iconStop) iconStop.style.display = 'none';
   }
+  // ポップアップも非表示に
+  hideSearchModePopup();
 }
