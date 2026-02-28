@@ -157,6 +157,18 @@
 
     <!-- ===== STEP 3: パーティ全体条件 ===== -->
     <div class="step-panel" id="step-3">
+      <!-- ベースキャラクター確認（おまけ機能） -->
+      <div id="step3-base-confirmation" class="section-card" style="display:none; padding: 12px;">
+        <div class="section-title" style="font-size: 0.95rem; margin-bottom: 6px;"><span class="emoji">👀</span>
+          ベースモンスター確認</div>
+        <p class="section-desc" style="font-size: 0.75rem; margin-bottom: 8px;">STEP0で入力されたモンスターの一覧と、所持している覚醒の合計を表示します。
+        </p>
+        <div id="step3-base-cards-container" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+        <div id="step3-base-awaken-summary"
+          style="margin-top: 8px; border-top: 1px dashed var(--border-color); padding-top: 8px; font-size: 0.8rem;">
+        </div>
+      </div>
+
       <div class="section-card">
         <div class="section-title"><span class="emoji">🎯</span> STEP 3: パーティ全体で必要な覚醒</div>
         <div id="step3-preassist-note" style="display:none"></div>

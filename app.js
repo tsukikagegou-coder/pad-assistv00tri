@@ -604,7 +604,10 @@ function goToStep(step) {
   // ステップ遷移時の情報更新
   if (step === 1) updateStep1BaseInfo();
   if (step === 2) updateStep2Summary();
-  if (step === 3) updateStep3PreAssistNote();
+  if (step === 3) {
+    updateStep3PreAssistNote();
+    updateStep3BaseConfirmation();
+  }
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1290,6 +1293,92 @@ function updateStep3PreAssistNote() {
     </div>
   `;
   note.style.display = 'block';
+}
+
+// --- STEP3: ベースキャラクター確認の更新 ---
+function updateStep3BaseConfirmation() {
+  const container = document.getElementById('step3-base-confirmation');
+  const cardsContainer = document.getElementById('step3-base-cards-container');
+  const summaryContainer = document.getElementById('step3-base-awaken-summary');
+
+  if (!container || !cardsContainer || !summaryContainer) return;
+
+  // Check if any base monster is selected in STEP0
+  const validBases = baseMonsters.filter(m => m !== null && m !== undefined);
+  if (validBases.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+
+  // Render cards
+  cardsContainer.innerHTML = '';
+  const allBaseAwakens = [];
+
+  for (let i = 0; i < 6; i++) {
+    const base = baseMonsters[i];
+    if (!base) continue;
+
+    const attrs = (base.attributes || []).filter((a, idx) => a != null && (a > 0 || (idx === 0 && a === 0)));
+    const types = (base.types || []).filter(t => t > 0);
+    const awakens = getActiveAwakens(base);
+    const skill = getSkillInfo(base);
+
+    // Add to all awakens for summary
+    allBaseAwakens.push(...awakens);
+
+    // Create compact card
+    const card = document.createElement('div');
+    card.className = 'compact-base-card';
+    card.style.cssText = 'flex: 1 1 30%; min-width: 140px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px; font-size: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; gap: 3px;';
+
+    card.innerHTML = `
+      <div style="font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--border-color); padding-bottom: 2px;">
+        <span style="color:var(--text-muted); font-size:0.7rem;">No.${base.no}</span> ${base.name}
+      </div>
+      <div>
+        ${attrs.map(a => `<img src="${attrIcon(a)}" title="${attrName(a)}" style="width:14px;height:14px;vertical-align:middle;">`).join('')}
+        ${types.map(t => `<img src="${typeIcon(t)}" title="${typeName(t)}" style="width:14px;height:14px;vertical-align:middle;margin-left:2px;">`).join('')}
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:1px;">
+        ${awakens.map(a => `<img src="${awakenIcon(a)}" title="${awakenName(a)}" style="width:16px;height:16px;">`).join('')}
+      </div>
+      <div style="color:var(--text-main); line-height:1.3; background: var(--bg-main); padding: 4px; border-radius: 4px; border: 1px solid var(--border-color); margin-top: 2px;">
+        ${skill ? `<div style="font-weight:bold; color:var(--accent-gold); margin-bottom:2px; font-size:0.72rem;">${skill.name} (CT:${skill.baseTurn}→${skill.minTurn})</div><div style="display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis; font-size:0.7rem; color:var(--text-muted);">${skill.description || 'スキルなし'}</div>` : '<div style="color:var(--text-muted);">スキル情報なし</div>'}
+      </div>
+    `;
+    cardsContainer.appendChild(card);
+  }
+
+  // Render summary
+  const awakenCounts = {};
+  allBaseAwakens.forEach(id => {
+    awakenCounts[id] = (awakenCounts[id] || 0) + 1;
+  });
+
+  const awakenIds = Object.keys(awakenCounts).map(Number);
+
+  // Sort: Skill Boost (21) and Skill Boost+ (56) first, then by ID
+  awakenIds.sort((a, b) => {
+    if (a === 21 && b !== 21) return -1;
+    if (b === 21 && a !== 21) return 1;
+    if (a === 56 && b !== 56) return -1;
+    if (b === 56 && a !== 56) return 1;
+    return a - b;
+  });
+
+  if (awakenIds.length > 0) {
+    const summaryHtml = awakenIds.map(id =>
+      `<span style="display:inline-flex; align-items:center; margin-right:6px; margin-bottom:4px; background:var(--bg-main); padding:2px 6px; border-radius:12px; border:1px solid var(--border-color); box-shadow:inset 0 1px 2px rgba(0,0,0,0.2);">
+        <img src="${awakenIcon(id)}" title="${awakenName(id)}" style="width:16px;height:16px; margin-right:4px;"> ×<span style="font-weight:bold; margin-left:2px;">${awakenCounts[id]}</span>
+      </span>`
+    ).join('');
+    summaryContainer.innerHTML = `<div style="font-weight:bold; margin-bottom:6px; color:var(--text-main);"><span class="emoji">📊</span> 【ベース覚醒合計】</div><div style="display:flex; flex-wrap:wrap;">${summaryHtml}</div>`;
+    summaryContainer.style.display = 'block';
+  } else {
+    summaryContainer.style.display = 'none';
+  }
+
+  container.style.display = 'block';
 }
 
 // ==================== STEP 3: パーティ覚醒グリッド（全覚醒表示） ====================
